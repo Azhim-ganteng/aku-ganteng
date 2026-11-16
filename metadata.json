@@ -1,0 +1,6 @@
+{
+  "name": "EDUWORLD AI",
+  "description": "Futuristic 3D educational metaverse city featuring interactive academic districts, 20 modular educational games, Gemini AI tutoring, and Firebase progress sync.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

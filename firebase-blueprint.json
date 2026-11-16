@@ -1,0 +1,251 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Student progression, avatar customization, and platform settings.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth user UID."
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 48,
+          "description": "Student public display name."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 48,
+          "description": "Earned academic rank title."
+        },
+        "xp": {
+          "type": "integer",
+          "description": "Total experience points earned."
+        },
+        "level": {
+          "type": "integer",
+          "description": "Current player level."
+        },
+        "coins": {
+          "type": "integer",
+          "description": "Total EduCoins earned."
+        },
+        "streakDays": {
+          "type": "integer",
+          "description": "Consecutive learning days."
+        },
+        "avatarSuitColor": {
+          "type": "string",
+          "maxLength": 16,
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        },
+        "avatarAccentColor": {
+          "type": "string",
+          "maxLength": 16,
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        },
+        "avatarVisorStyle": {
+          "type": "string",
+          "enum": ["sky", "amber", "emerald", "obsidian"]
+        },
+        "avatarPackStyle": {
+          "type": "string",
+          "enum": ["wings", "thruster", "satchel", "none"]
+        },
+        "visitedDistricts": {
+          "type": "array",
+          "description": "District IDs explored by the student (max 10)."
+        },
+        "claimedMissions": {
+          "type": "array",
+          "description": "Claimed mission IDs (max 30)."
+        },
+        "unlockedAchievements": {
+          "type": "array",
+          "description": "Unlocked achievement IDs (max 30)."
+        },
+        "gamesCompletedCount": {
+          "type": "integer",
+          "description": "Count of distinct games completed."
+        },
+        "qualityTier": {
+          "type": "string",
+          "enum": ["auto", "low", "high"]
+        },
+        "soundEnabled": {
+          "type": "boolean"
+        },
+        "cameraSensitivity": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "displayName",
+        "title",
+        "xp",
+        "level",
+        "coins",
+        "streakDays",
+        "avatarSuitColor",
+        "avatarAccentColor",
+        "avatarVisorStyle",
+        "avatarPackStyle",
+        "visitedDistricts",
+        "claimedMissions",
+        "unlockedAchievements",
+        "gamesCompletedCount",
+        "qualityTier",
+        "soundEnabled",
+        "cameraSensitivity",
+        "updatedAt"
+      ]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Isolated PII record containing student email.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "updatedAt"]
+    },
+    "GameProgressRecord": {
+      "title": "GameProgressRecord",
+      "description": "Per-game score and mastery record for a student.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "gameId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9\\-]+$"
+        },
+        "bestScore": {
+          "type": "integer"
+        },
+        "bestAccuracy": {
+          "type": "integer"
+        },
+        "playCount": {
+          "type": "integer"
+        },
+        "highestDifficulty": {
+          "type": "string",
+          "enum": ["explorer", "scholar", "master"]
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "gameId",
+        "bestScore",
+        "bestAccuracy",
+        "playCount",
+        "highestDifficulty",
+        "updatedAt"
+      ]
+    },
+    "LeaderboardEntry": {
+      "title": "LeaderboardEntry",
+      "description": "Public non-PII student ranking entry.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 48
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 48
+        },
+        "xp": {
+          "type": "integer"
+        },
+        "level": {
+          "type": "integer"
+        },
+        "gamesCompletedCount": {
+          "type": "integer"
+        },
+        "avatarAccentColor": {
+          "type": "string",
+          "maxLength": 16,
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "displayName",
+        "title",
+        "xp",
+        "level",
+        "gamesCompletedCount",
+        "avatarAccentColor",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Student progression and avatar profile document."
+    },
+    "/users/{userId}/private/info": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Isolated PII document for student email."
+    },
+    "/users/{userId}/gameProgress/{gameId}": {
+      "schema": { "$ref": "#/entities/GameProgressRecord" },
+      "description": "Per-game scores and difficulty mastery."
+    },
+    "/leaderboard/{userId}": {
+      "schema": { "$ref": "#/entities/LeaderboardEntry" },
+      "description": "Public non-PII leaderboard entries."
+    }
+  }
+}
