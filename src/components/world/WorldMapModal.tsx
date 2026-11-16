@@ -17,6 +17,8 @@ import {
   WORLD_LANDMARKS,
   WORLD_WATER_BODIES,
 } from '../../data/openWorldData';
+import { BUILD_ZONES } from '../../data/sandboxCatalog';
+import { MINI_GAME_HUB_COORDS } from '../../data/miniGamesData';
 import { useEduWorld } from '../../context/EduWorldContext';
 import { ExplorationObjective } from '../../types/eduworld';
 
@@ -343,6 +345,71 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
                   );
                 })}
 
+                {/* 6 Creative Sandbox Build Zones */}
+                {BUILD_ZONES.map((bz) => (
+                  <g
+                    key={bz.id}
+                    className="cursor-pointer"
+                    onMouseEnter={() => {
+                      setSelectedLabel(`Build Zone: ${bz.name}`);
+                      setSelectedDetail(`Creative Sandbox Construction Plot (${bz.theme}). Click to Fast Travel.`);
+                    }}
+                    onClick={() => travelAndClose(bz.centerX, bz.centerZ, bz.name)}
+                  >
+                    <rect
+                      x={bz.centerX - bz.halfW}
+                      y={bz.centerZ - bz.halfD}
+                      width={bz.halfW * 2}
+                      height={bz.halfD * 2}
+                      rx={4}
+                      fill={bz.accentHex}
+                      fillOpacity={0.14}
+                      stroke={bz.accentHex}
+                      strokeWidth={2}
+                      strokeDasharray="4 3"
+                    />
+                    <text
+                      x={bz.centerX}
+                      y={bz.centerZ + 3}
+                      textAnchor="middle"
+                      fontSize={7.5}
+                      fontWeight="700"
+                      fill="#0f172a"
+                    >
+                      BUILD
+                    </text>
+                  </g>
+                ))}
+
+                {/* Mini Game Hub Pavilion */}
+                <g
+                  className="cursor-pointer"
+                  onMouseEnter={() => {
+                    setSelectedLabel('Mini Game Hub Pavilion');
+                    setSelectedDetail('7 playable challenges: Parkour, Treasure Hunt, Quiz Battle, Science, Network, Racing & Farming.');
+                  }}
+                  onClick={() => travelAndClose(MINI_GAME_HUB_COORDS.x - 4, MINI_GAME_HUB_COORDS.z + 11, 'Mini Game Hub Pavilion')}
+                >
+                  <circle
+                    cx={MINI_GAME_HUB_COORDS.x}
+                    cy={MINI_GAME_HUB_COORDS.z}
+                    r={11}
+                    fill="#f59e0b"
+                    stroke="#ffffff"
+                    strokeWidth={2.5}
+                  />
+                  <text
+                    x={MINI_GAME_HUB_COORDS.x}
+                    y={MINI_GAME_HUB_COORDS.z + 3}
+                    textAnchor="middle"
+                    fontSize={8.5}
+                    fontWeight="800"
+                    fill="#ffffff"
+                  >
+                    HUB
+                  </text>
+                </g>
+
                 {/* Live Player Position & Heading Indicator */}
                 <g transform={`translate(${playerPos.x}, ${playerPos.z}) rotate(${arrowAngleDeg})`}>
                   <circle cx={0} cy={0} r={11} fill="#ef4444" fillOpacity={0.22} />
@@ -421,6 +488,33 @@ export const WorldMapModal: React.FC<WorldMapModalProps> = ({
                       </button>
                     );
                   })}
+                </div>
+              </div>
+
+              <div>
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
+                  Mini Game Hub & Build Zones
+                </h3>
+                <div className="flex flex-wrap gap-1.5 mb-3">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      travelAndClose(MINI_GAME_HUB_COORDS.x - 4, MINI_GAME_HUB_COORDS.z + 11, 'Mini Game Hub Pavilion')
+                    }
+                    className="px-2.5 py-1.5 rounded-lg border border-amber-300 bg-amber-50 text-xs font-semibold text-amber-900 hover:bg-amber-100 transition-colors"
+                  >
+                    Mini Game Hub
+                  </button>
+                  {BUILD_ZONES.map((bz) => (
+                    <button
+                      key={bz.id}
+                      type="button"
+                      onClick={() => travelAndClose(bz.centerX, bz.centerZ, bz.name)}
+                      className="px-2 py-1.5 rounded-lg border border-slate-200 bg-white text-[11px] font-medium text-slate-700 hover:bg-sky-50 hover:border-sky-300 transition-colors"
+                    >
+                      {bz.name.replace(' Plot', '')}
+                    </button>
+                  ))}
                 </div>
               </div>
 

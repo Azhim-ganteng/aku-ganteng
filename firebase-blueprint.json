@@ -228,6 +228,55 @@
         "avatarAccentColor",
         "updatedAt"
       ]
+    },
+    "SandboxBuild": {
+      "title": "SandboxBuild",
+      "description": "Saved 3D creative sandbox construction containing placed objects, positions, rotations, and material variants.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "buildId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "zoneId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 48
+        },
+        "itemCount": {
+          "type": "integer"
+        },
+        "items": {
+          "type": "array",
+          "description": "Placed blocks/objects (max 250) storing id, itemId, x, y, z, rotY, and optional materialVariant."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "buildId",
+        "name",
+        "zoneId",
+        "itemCount",
+        "items",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -242,6 +291,10 @@
     "/users/{userId}/gameProgress/{gameId}": {
       "schema": { "$ref": "#/entities/GameProgressRecord" },
       "description": "Per-game scores and difficulty mastery."
+    },
+    "/users/{userId}/sandboxBuilds/{buildId}": {
+      "schema": { "$ref": "#/entities/SandboxBuild" },
+      "description": "Creative sandbox construction saves owned by a student."
     },
     "/leaderboard/{userId}": {
       "schema": { "$ref": "#/entities/LeaderboardEntry" },

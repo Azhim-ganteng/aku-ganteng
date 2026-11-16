@@ -26,6 +26,7 @@ import { PlayerProfileView } from './components/views/PlayerProfileView';
 import { SettingsView } from './components/views/SettingsView';
 import { GameLauncherModal } from './components/games/GameLauncherModal';
 import { NpcDialogueModal } from './components/world/NpcDialogueModal';
+import { MiniGameHubModal } from './components/minigames/MiniGameHubModal';
 
 const NAV_ITEMS: { id: NavTab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'home', label: 'Home', icon: Home },
@@ -194,6 +195,7 @@ const AppShell: React.FC = () => {
       {/* Interactive Modals & Toast */}
       <GameLauncherModal />
       <NpcDialogueModal />
+      <MiniGameHubModal />
 
       {toast && (
         <div className="fixed top-16 right-4 z-50 max-w-sm rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-lg flex items-start justify-between gap-3">

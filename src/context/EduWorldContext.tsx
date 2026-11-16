@@ -7,6 +7,7 @@ import {
 } from 'firebase/auth';
 import {
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -29,10 +30,15 @@ import {
   GameDefinition,
   GameProgressRecord,
   LeaderboardEntry,
+  MiniGameCompletionPayload,
+  MiniGameId,
+  MiniGameProgressState,
   NavTab,
   NPCDefinition,
   OpenWorldDistrictId,
+  PlacedSandboxObject,
   PlayerState,
+  SandboxBuildProject,
 } from '../types/eduworld';
 import { GAMES_CATALOG } from '../data/gamesCatalog';
 import { ACHIEVEMENTS, MISSIONS } from '../data/missionsAndBadges';
@@ -41,11 +47,24 @@ import {
   OPEN_WORLD_DISTRICTS,
   WORLD_LANDMARKS,
 } from '../data/openWorldData';
+import { MINI_GAMES } from '../data/miniGamesData';
+import { MAX_SANDBOX_ITEMS } from '../data/sandboxCatalog';
 import { OperationType, auth, db, googleProvider, handleFirestoreError } from '../services/firebase';
 import { playCoinTone, playSuccessTone } from '../utils/audio';
 
 const STORAGE_KEY = 'eduworld_ai_player_v1';
 const OPEN_WORLD_STORAGE_KEY = 'eduworld_openworld_v1';
+const SANDBOX_STORAGE_KEY = 'eduworld_sandbox_v1';
+const MINIGAMES_STORAGE_KEY = 'eduworld_minigames_v1';
+
+const DEFAULT_MINIGAME_STATE: MiniGameProgressState = {
+  completedIds: [],
+  bestScores: {},
+  bestTimes: {},
+  unlockedBadges: [],
+  unlockedSandboxItems: [],
+  playCounts: {},
+};
 
 const DEFAULT_OPEN_WORLD_STATE: ExplorationProgressState = {
   visitedOuterDistricts: [],
@@ -127,6 +146,31 @@ interface EduWorldContextValue {
   discoverLandmark: (landmarkId: string) => void;
   recordBridgeCrossed: (bridgeId: string) => void;
   claimExplorationObjective: (objectiveId: string) => void;
+  miniGameProgress: MiniGameProgressState;
+  miniGameHubOpen: boolean;
+  activeMiniGameId: MiniGameId | null;
+  openMiniGameHub: (initialId?: MiniGameId | null) => void;
+  closeMiniGameHub: () => void;
+  recordMiniGameCompletion: (payload: MiniGameCompletionPayload) => Promise<{
+    xpEarned: number;
+    coinsEarned: number;
+    newlyUnlockedItem: string | null;
+    newlyUnlockedBadge: string | null;
+  }>;
+  sandboxBuilds: SandboxBuildProject[];
+  activeSandboxBuildId: string | null;
+  activeSandboxItems: PlacedSandboxObject[];
+  setActiveSandboxItems: React.Dispatch<React.SetStateAction<PlacedSandboxObject[]>>;
+  saveSandboxBuild: (
+    name: string,
+    zoneId: string,
+    items: PlacedSandboxObject[],
+    existingBuildId?: string | null,
+  ) => Promise<SandboxBuildProject | null>;
+  selectSandboxBuild: (buildId: string) => SandboxBuildProject | null;
+  createNewSandboxDraft: () => void;
+  renameSandboxBuild: (buildId: string, newName: string) => Promise<void>;
+  deleteSandboxBuild: (buildId: string) => Promise<void>;
   recordGameCompletion: (payload: GameCompletionPayload) => Promise<{ xpEarned: number; coinsEarned: number }>;
   visitDistrict: (districtId: DistrictId) => void;
   claimMission: (missionId: string) => void;
@@ -243,12 +287,91 @@ function loadOpenWorldProgress(): ExplorationProgressState {
   }
 }
 
+function sanitizeSandboxItems(rawItems: unknown): PlacedSandboxObject[] {
+  if (!Array.isArray(rawItems)) return [];
+  const cleaned: PlacedSandboxObject[] = [];
+  for (let i = 0; i < rawItems.length && cleaned.length < MAX_SANDBOX_ITEMS; i++) {
+    const row = rawItems[i] as Partial<PlacedSandboxObject> | null;
+    if (!row || typeof row !== 'object') continue;
+    const id = typeof row.id === 'string' && row.id.trim() ? row.id.trim().slice(0, 64) : `obj-${i}-${Date.now()}`;
+    const itemId = typeof row.itemId === 'string' ? row.itemId.trim().slice(0, 48) : '';
+    const x = Number(row.x);
+    const y = Number(row.y);
+    const z = Number(row.z);
+    const rotY = Number(row.rotY);
+    if (!itemId || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z) || !Number.isFinite(rotY)) {
+      continue;
+    }
+    const obj: PlacedSandboxObject = {
+      id,
+      itemId,
+      x: Math.round(x * 100) / 100,
+      y: Math.round(y * 100) / 100,
+      z: Math.round(z * 100) / 100,
+      rotY: Math.round(rotY * 1000) / 1000,
+    };
+    if (typeof row.materialVariant === 'string' && row.materialVariant.trim() && row.materialVariant !== 'default') {
+      obj.materialVariant = row.materialVariant.trim().slice(0, 32);
+    }
+    cleaned.push(obj);
+  }
+  return cleaned;
+}
+
+function loadLocalSandboxBuilds(): SandboxBuildProject[] {
+  try {
+    const raw = localStorage.getItem(SANDBOX_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as Partial<SandboxBuildProject>[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((b): b is Partial<SandboxBuildProject> => Boolean(b && typeof b === 'object' && typeof b.buildId === 'string'))
+      .slice(0, 24)
+      .map((b) => ({
+        buildId: String(b.buildId).replace(/[^a-zA-Z0-9_\-]/g, '').slice(0, 64) || `build-${Date.now()}`,
+        name: (typeof b.name === 'string' && b.name.trim() ? b.name.trim() : 'Untitled Build').slice(0, 64),
+        zoneId: (typeof b.zoneId === 'string' && b.zoneId.trim() ? b.zoneId.trim() : 'zone-ne-meadow').slice(0, 48),
+        items: sanitizeSandboxItems(b.items),
+        updatedAt: typeof b.updatedAt === 'string' ? b.updatedAt : new Date().toISOString(),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function loadLocalMiniGameProgress(): MiniGameProgressState {
+  try {
+    const raw = localStorage.getItem(MINIGAMES_STORAGE_KEY);
+    if (!raw) return DEFAULT_MINIGAME_STATE;
+    const parsed = JSON.parse(raw) as Partial<MiniGameProgressState>;
+    return {
+      completedIds: sanitizeIdList<MiniGameId>(parsed.completedIds, 12, []),
+      bestScores: parsed.bestScores && typeof parsed.bestScores === 'object' ? parsed.bestScores : {},
+      bestTimes: parsed.bestTimes && typeof parsed.bestTimes === 'object' ? parsed.bestTimes : {},
+      unlockedBadges: sanitizeIdList<string>(parsed.unlockedBadges, 20, []),
+      unlockedSandboxItems: sanitizeIdList<string>(parsed.unlockedSandboxItems, 20, []),
+      playCounts: parsed.playCounts && typeof parsed.playCounts === 'object' ? parsed.playCounts : {},
+    };
+  } catch {
+    return DEFAULT_MINIGAME_STATE;
+  }
+}
+
 export const EduWorldProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [activeTab, setActiveTab] = useState<NavTab>('home');
   const [player, setPlayer] = useState<PlayerState>(loadGuestState);
   const [openWorldProgress, setOpenWorldProgress] = useState<ExplorationProgressState>(loadOpenWorldProgress);
   const openWorldProgressRef = useRef<ExplorationProgressState>(openWorldProgress);
   openWorldProgressRef.current = openWorldProgress;
+  const [miniGameProgress, setMiniGameProgress] = useState<MiniGameProgressState>(loadLocalMiniGameProgress);
+  const [miniGameHubOpen, setMiniGameHubOpen] = useState(false);
+  const [activeMiniGameId, setActiveMiniGameId] = useState<MiniGameId | null>(null);
+  const [sandboxBuilds, setSandboxBuilds] = useState<SandboxBuildProject[]>(loadLocalSandboxBuilds);
+  const [activeSandboxBuildId, setActiveSandboxBuildId] = useState<string | null>(null);
+  const [activeSandboxItems, setActiveSandboxItems] = useState<PlacedSandboxObject[]>(() => {
+    const initialBuilds = loadLocalSandboxBuilds();
+    return initialBuilds.length > 0 ? initialBuilds[0].items : [];
+  });
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -291,6 +414,22 @@ export const EduWorldProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       // Ignore quota issues in private browsing
     }
   }, [openWorldProgress]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(MINIGAMES_STORAGE_KEY, JSON.stringify(miniGameProgress));
+    } catch {
+      // Ignore quota issues
+    }
+  }, [miniGameProgress]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SANDBOX_STORAGE_KEY, JSON.stringify(sandboxBuilds));
+    } catch {
+      // Ignore quota issues
+    }
+  }, [sandboxBuilds]);
 
   // Helper to evaluate newly unlocked achievements
   const evaluateAchievements = useCallback((state: PlayerState): string[] => {
@@ -446,6 +585,32 @@ export const EduWorldProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         avatarAccentColor: sanitizeHexColor(resolvedState.avatar.accentColor, '#0284C7'),
         updatedAt: serverTimestamp(),
       });
+
+      // Load user's saved Creative Sandbox constructions
+      currentOp = OperationType.LIST;
+      currentPath = `users/${firebaseUser.uid}/sandboxBuilds`;
+      const buildsQuery = query(
+        collection(db, 'users', firebaseUser.uid, 'sandboxBuilds'),
+        where('uid', '==', firebaseUser.uid),
+      );
+      const buildsSnap = await getDocs(buildsQuery);
+      const loadedBuilds: SandboxBuildProject[] = [];
+      buildsSnap.forEach((docSnap) => {
+        const sb = docSnap.data();
+        loadedBuilds.push({
+          buildId: docSnap.id,
+          name: String(sb.name || 'Saved Build').slice(0, 64),
+          zoneId: String(sb.zoneId || 'zone-ne-meadow').slice(0, 48),
+          items: sanitizeSandboxItems(sb.items),
+          updatedAt: new Date().toISOString(),
+        });
+      });
+
+      if (loadedBuilds.length > 0) {
+        setSandboxBuilds(loadedBuilds);
+        setActiveSandboxBuildId(loadedBuilds[0].buildId);
+        setActiveSandboxItems(loadedBuilds[0].items);
+      }
 
       syncedUidRef.current = firebaseUser.uid;
       setPlayer(resolvedState);
@@ -775,6 +940,224 @@ export const EduWorldProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     [awardExplorationBonus, notify, player.settings.soundEnabled],
   );
 
+  const openMiniGameHub = useCallback((initialId: MiniGameId | null = null) => {
+    setActiveNpc(null);
+    setActiveGame(null);
+    setActiveMiniGameId(initialId);
+    setMiniGameHubOpen(true);
+  }, []);
+
+  const closeMiniGameHub = useCallback(() => {
+    setMiniGameHubOpen(false);
+    setActiveMiniGameId(null);
+  }, []);
+
+  const recordMiniGameCompletion = useCallback(
+    async ({ miniGameId, score, timeSeconds, accuracy, won }: MiniGameCompletionPayload) => {
+      const def = MINI_GAMES.find((m) => m.id === miniGameId);
+      const accFactor = typeof accuracy === 'number' ? Math.max(0.5, accuracy / 100) : 1;
+      const xpEarned = won
+        ? Math.round((def?.baseXp ?? 100) * accFactor + Math.min(80, score * 0.15))
+        : Math.round((def?.baseXp ?? 100) * 0.35);
+      const coinsEarned = won
+        ? Math.round((def?.baseCoins ?? 50) * accFactor + Math.min(40, score * 0.08))
+        : Math.round((def?.baseCoins ?? 50) * 0.3);
+
+      let newlyUnlockedItem: string | null = null;
+      let newlyUnlockedBadge: string | null = null;
+
+      setMiniGameProgress((prev) => {
+        const nextCompleted = won && !prev.completedIds.includes(miniGameId)
+          ? [...prev.completedIds, miniGameId]
+          : prev.completedIds;
+        const prevBest = prev.bestScores[miniGameId] ?? 0;
+        const nextBestScores = {
+          ...prev.bestScores,
+          [miniGameId]: Math.max(prevBest, Math.round(score)),
+        };
+        const prevBestTime = prev.bestTimes[miniGameId];
+        const nextBestTimes =
+          won && typeof timeSeconds === 'number' && timeSeconds > 0
+            ? {
+                ...prev.bestTimes,
+                [miniGameId]: prevBestTime ? Math.min(prevBestTime, Math.round(timeSeconds * 10) / 10) : Math.round(timeSeconds * 10) / 10,
+              }
+            : prev.bestTimes;
+
+        const nextBadges = [...prev.unlockedBadges];
+        if (won && def && !nextBadges.includes(def.badgeId)) {
+          nextBadges.push(def.badgeId);
+          newlyUnlockedBadge = def.badgeTitle;
+        }
+        const nextUnlockItems = [...prev.unlockedSandboxItems];
+        if (won && def && !nextUnlockItems.includes(def.unlockItemId)) {
+          nextUnlockItems.push(def.unlockItemId);
+          newlyUnlockedItem = def.unlockItemName;
+        }
+
+        return {
+          completedIds: nextCompleted,
+          bestScores: nextBestScores,
+          bestTimes: nextBestTimes,
+          unlockedBadges: nextBadges,
+          unlockedSandboxItems: nextUnlockItems,
+          playCounts: {
+            ...prev.playCounts,
+            [miniGameId]: (prev.playCounts[miniGameId] ?? 0) + 1,
+          },
+        };
+      });
+
+      awardExplorationBonus(xpEarned, coinsEarned);
+      if (won) {
+        playSuccessTone(player.settings.soundEnabled);
+        notify(
+          `${def?.title ?? 'Mini-Game'} Cleared!`,
+          newlyUnlockedItem
+            ? `+${xpEarned} XP, +${coinsEarned} Coins · Unlocked "${newlyUnlockedItem}" in Build Mode!`
+            : `+${xpEarned} XP and +${coinsEarned} EduCoins awarded.`,
+        );
+      } else {
+        playCoinTone(player.settings.soundEnabled);
+        notify(`${def?.title ?? 'Mini-Game'} Completed`, `Practice reward: +${xpEarned} XP, +${coinsEarned} Coins.`);
+      }
+
+      return { xpEarned, coinsEarned, newlyUnlockedItem, newlyUnlockedBadge };
+    },
+    [awardExplorationBonus, notify, player.settings.soundEnabled],
+  );
+
+  const saveSandboxBuild = useCallback(
+    async (
+      name: string,
+      zoneId: string,
+      items: PlacedSandboxObject[],
+      existingBuildId?: string | null,
+    ): Promise<SandboxBuildProject | null> => {
+      const safeName = (name.trim() || 'Solarpunk Creation').slice(0, 64);
+      const safeZone = (zoneId.trim() || 'zone-ne-meadow').slice(0, 48);
+      const safeItems = sanitizeSandboxItems(items);
+      const cleanId =
+        existingBuildId && /^[a-zA-Z0-9_\-]+$/.test(existingBuildId)
+          ? existingBuildId.slice(0, 64)
+          : `build-${Date.now()}`;
+      const isUpdate = Boolean(existingBuildId && sandboxBuilds.some((b) => b.buildId === cleanId));
+
+      const project: SandboxBuildProject = {
+        buildId: cleanId,
+        name: safeName,
+        zoneId: safeZone,
+        items: safeItems,
+        updatedAt: new Date().toISOString(),
+      };
+
+      setSandboxBuilds((prev) => {
+        const idx = prev.findIndex((b) => b.buildId === cleanId);
+        if (idx >= 0) {
+          const copy = [...prev];
+          copy[idx] = project;
+          return copy;
+        }
+        return [project, ...prev].slice(0, 24);
+      });
+      setActiveSandboxBuildId(cleanId);
+      setActiveSandboxItems(safeItems);
+
+      if (user && user.emailVerified && syncedUidRef.current === user.uid) {
+        const docPath = `users/${user.uid}/sandboxBuilds/${cleanId}`;
+        const docRef = doc(db, 'users', user.uid, 'sandboxBuilds', cleanId);
+        try {
+          if (isUpdate) {
+            await updateDoc(docRef, {
+              name: safeName,
+              zoneId: safeZone,
+              itemCount: safeItems.length,
+              items: safeItems,
+              updatedAt: serverTimestamp(),
+            });
+          } else {
+            await setDoc(docRef, {
+              uid: user.uid,
+              buildId: cleanId,
+              name: safeName,
+              zoneId: safeZone,
+              itemCount: safeItems.length,
+              items: safeItems,
+              updatedAt: serverTimestamp(),
+            });
+          }
+        } catch (error) {
+          handleFirestoreError(error, isUpdate ? OperationType.UPDATE : OperationType.CREATE, docPath);
+        }
+      }
+
+      playCoinTone(player.settings.soundEnabled);
+      notify('Construction Saved', `"${safeName}" (${safeItems.length} objects) saved.`);
+      return project;
+    },
+    [notify, player.settings.soundEnabled, sandboxBuilds, user],
+  );
+
+  const selectSandboxBuild = useCallback(
+    (buildId: string): SandboxBuildProject | null => {
+      const found = sandboxBuilds.find((b) => b.buildId === buildId) ?? null;
+      if (!found) return null;
+      setActiveSandboxBuildId(found.buildId);
+      setActiveSandboxItems(found.items);
+      notify('Construction Loaded', `Loaded "${found.name}" (${found.items.length} objects).`);
+      return found;
+    },
+    [notify, sandboxBuilds],
+  );
+
+  const createNewSandboxDraft = useCallback(() => {
+    setActiveSandboxBuildId(null);
+    setActiveSandboxItems([]);
+  }, []);
+
+  const renameSandboxBuild = useCallback(
+    async (buildId: string, newName: string) => {
+      const safeName = newName.trim().slice(0, 64);
+      if (!safeName) return;
+      setSandboxBuilds((prev) =>
+        prev.map((b) => (b.buildId === buildId ? { ...b, name: safeName, updatedAt: new Date().toISOString() } : b)),
+      );
+      if (user && user.emailVerified && syncedUidRef.current === user.uid) {
+        const docPath = `users/${user.uid}/sandboxBuilds/${buildId}`;
+        try {
+          await updateDoc(doc(db, 'users', user.uid, 'sandboxBuilds', buildId), {
+            name: safeName,
+            updatedAt: serverTimestamp(),
+          });
+        } catch (error) {
+          handleFirestoreError(error, OperationType.UPDATE, docPath);
+        }
+      }
+      notify('Construction Renamed', `Renamed to "${safeName}".`);
+    },
+    [notify, user],
+  );
+
+  const deleteSandboxBuild = useCallback(
+    async (buildId: string) => {
+      setSandboxBuilds((prev) => prev.filter((b) => b.buildId !== buildId));
+      if (activeSandboxBuildId === buildId) {
+        setActiveSandboxBuildId(null);
+        setActiveSandboxItems([]);
+      }
+      if (user && user.emailVerified && syncedUidRef.current === user.uid) {
+        const docPath = `users/${user.uid}/sandboxBuilds/${buildId}`;
+        try {
+          await deleteDoc(doc(db, 'users', user.uid, 'sandboxBuilds', buildId));
+        } catch (error) {
+          handleFirestoreError(error, OperationType.DELETE, docPath);
+        }
+      }
+      notify('Construction Deleted', 'Removed saved sandbox construction.');
+    },
+    [activeSandboxBuildId, notify, user],
+  );
+
   const recordAiInteraction = useCallback(() => {
     setPlayer((prev) => ({
       ...prev,
@@ -965,6 +1348,21 @@ export const EduWorldProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       discoverLandmark,
       recordBridgeCrossed,
       claimExplorationObjective,
+      miniGameProgress,
+      miniGameHubOpen,
+      activeMiniGameId,
+      openMiniGameHub,
+      closeMiniGameHub,
+      recordMiniGameCompletion,
+      sandboxBuilds,
+      activeSandboxBuildId,
+      activeSandboxItems,
+      setActiveSandboxItems,
+      saveSandboxBuild,
+      selectSandboxBuild,
+      createNewSandboxDraft,
+      renameSandboxBuild,
+      deleteSandboxBuild,
       recordGameCompletion,
       visitDistrict,
       claimMission,
@@ -1000,6 +1398,20 @@ export const EduWorldProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       discoverLandmark,
       recordBridgeCrossed,
       claimExplorationObjective,
+      miniGameProgress,
+      miniGameHubOpen,
+      activeMiniGameId,
+      openMiniGameHub,
+      closeMiniGameHub,
+      recordMiniGameCompletion,
+      sandboxBuilds,
+      activeSandboxBuildId,
+      activeSandboxItems,
+      saveSandboxBuild,
+      selectSandboxBuild,
+      createNewSandboxDraft,
+      renameSandboxBuild,
+      deleteSandboxBuild,
       recordGameCompletion,
       visitDistrict,
       claimMission,

@@ -198,25 +198,20 @@ export function createCityTextureSet(
       limeHeightCtx.fillStyle = isAccentCourse ? '#d0d0d0' : '#ececec';
       limeHeightCtx.fillRect(px + seamPx, py + seamPx, pw - seamPx * 2, ph - seamPx * 2);
 
+      // Clean per-panel crevice & chamfer AO (no full-tile vertical stripe so repeat(1,2) never seams mid-wall)
       limeAoCtx.strokeStyle = '#64748b';
       limeAoCtx.lineWidth = seamPx * 2.4;
       limeAoCtx.strokeRect(px + 1, py + 1, pw - 2, ph - 2);
+      limeAoCtx.strokeStyle = 'rgba(100, 116, 139, 0.25)';
+      limeAoCtx.lineWidth = seamPx * 4.0;
+      limeAoCtx.strokeRect(px + seamPx, py + seamPx, pw - seamPx * 2, ph - seamPx * 2);
     }
   }
-
-  // Vertical AO shading (ground-level grime/shadow + top-cornice overhang shadow)
-  const aoTopGrad = limeAoCtx.createLinearGradient(0, 0, 0, res);
-  aoTopGrad.addColorStop(0, 'rgba(51, 65, 85, 0.38)');
-  aoTopGrad.addColorStop(0.14, 'rgba(255, 255, 255, 0)');
-  aoTopGrad.addColorStop(0.82, 'rgba(255, 255, 255, 0)');
-  aoTopGrad.addColorStop(1, 'rgba(51, 65, 85, 0.42)');
-  limeAoCtx.fillStyle = aoTopGrad;
-  limeAoCtx.fillRect(0, 0, res, res);
 
   const limestoneMap = register(new THREE.CanvasTexture(limeColorC), true, 1, 2);
   const limestoneRoughness = register(new THREE.CanvasTexture(limeRoughC), false, 1, 2);
   const limestoneAo = register(new THREE.CanvasTexture(limeAoC), false, 1, 2);
-  const limestoneNormal = heightCanvasToNormalTexture(limeHeightC, 3.0, 1, 2, maxAniso);
+  const limestoneNormal = heightCanvasToNormalTexture(limeHeightC, 3.2, 1, 2, maxAniso);
   textures.push(limestoneNormal);
 
   // 2. High-Contrast Deep Tinted Architectural Glass Curtain Wall (Dark Frames + Interior Room Depth)
@@ -261,30 +256,55 @@ export function createCityTextureSet(
       glassColorCtx.fillRect(px, py, pwPane, phPane);
 
       // Subtle architectural spandrel band & diagonal sky sheen inside each pane
-      glassColorCtx.fillStyle = 'rgba(186, 230, 253, 0.22)';
-      glassColorCtx.fillRect(px + 2, py + 2, pwPane - 4, phPane * 0.18);
+      glassColorCtx.fillStyle = 'rgba(186, 230, 253, 0.28)';
+      glassColorCtx.fillRect(px + 2, py + 2, pwPane - 4, phPane * 0.22);
 
-      // Inner window sill shadow & blind slats
-      glassColorCtx.fillStyle = 'rgba(15, 23, 42, 0.4)';
+      // Subtle diagonal sky reflection glint across upper glazing
+      glassColorCtx.fillStyle = 'rgba(224, 242, 254, 0.14)';
+      glassColorCtx.beginPath();
+      glassColorCtx.moveTo(px + pwPane * 0.12, py + 2);
+      glassColorCtx.lineTo(px + pwPane * 0.45, py + 2);
+      glassColorCtx.lineTo(px + pwPane * 0.18, py + phPane * 0.72);
+      glassColorCtx.lineTo(px + 2, py + phPane * 0.72);
+      glassColorCtx.closePath();
+      glassColorCtx.fill();
+
+      // Subtle interior architectural Venetian blinds on select office bays
+      if (roomTone > 0.45) {
+        glassColorCtx.fillStyle = 'rgba(15, 23, 42, 0.22)';
+        for (let b = 0; b < 4; b++) {
+          glassColorCtx.fillRect(px + 3, py + 4 + b * (phPane * 0.08), pwPane - 6, Math.max(1.5, res / 420));
+        }
+      }
+
+      // Inner window sill shadow & metallic frame gasket highlight
+      glassColorCtx.fillStyle = 'rgba(15, 23, 42, 0.44)';
       glassColorCtx.fillRect(px, py + phPane - Math.max(4, res / 170), pwPane, Math.max(4, res / 170));
+      glassColorCtx.strokeStyle = 'rgba(148, 163, 184, 0.34)';
+      glassColorCtx.lineWidth = Math.max(1, res / 512);
+      glassColorCtx.strokeRect(px - 1, py - 1, pwPane + 2, phPane + 2);
 
       // Mirror-smooth glass roughness (~0.06) vs satin-matte dark mullions
-      glassRoughCtx.fillStyle = '#101010';
+      glassRoughCtx.fillStyle = '#0e0e0e';
       glassRoughCtx.fillRect(px, py, pwPane, phPane);
 
       // Recessed glass plane inside proud mullions
-      glassHeightCtx.fillStyle = '#626262';
+      glassHeightCtx.fillStyle = '#5a5a5a';
       glassHeightCtx.fillRect(px, py, pwPane, phPane);
 
-      // Varied warm-amber & cool-cyan office/lab interior glow (only some bays lit brightly)
-      const isWarmRoom = hash2(c * 11, r * 7) > 0.68;
-      const roomStrength = roomTone > 0.3 ? 110 + roomTone * 115 : 42 + roomTone * 50;
+      // Varied warm-amber & cool-cyan office/lab interior glow (with overhead ceiling light bar)
+      const isWarmRoom = hash2(c * 11, r * 7) > 0.66;
+      const roomStrength = roomTone > 0.3 ? 115 + roomTone * 115 : 46 + roomTone * 50;
       if (isWarmRoom) {
         glassEmitCtx.fillStyle = `rgb(${Math.round(roomStrength)}, ${Math.round(roomStrength * 0.84)}, ${Math.round(roomStrength * 0.58)})`;
       } else {
         glassEmitCtx.fillStyle = `rgb(${Math.round(roomStrength * 0.45)}, ${Math.round(roomStrength * 0.78)}, ${Math.round(roomStrength)})`;
       }
       glassEmitCtx.fillRect(px + 3, py + 3, pwPane - 6, phPane - 6);
+      if (roomTone > 0.35) {
+        glassEmitCtx.fillStyle = isWarmRoom ? 'rgba(254, 243, 199, 0.55)' : 'rgba(224, 242, 254, 0.52)';
+        glassEmitCtx.fillRect(px + pwPane * 0.18, py + 5, pwPane * 0.64, Math.max(3, phPane * 0.1));
+      }
 
       // Secondary horizontal transom & vertical center mullion bar
       const transomY = py + phPane * 0.6;
@@ -367,17 +387,31 @@ export function createCityTextureSet(
   const sh = subRes / sRows;
   for (let r = 0; r < sRows; r++) {
     for (let c = 0; c < sCols; c++) {
-      solCtx.fillStyle = '#0f294a';
-      solCtx.fillRect(c * sw + 3, r * sh + 3, sw - 6, sh - 6);
-      solCtx.strokeStyle = 'rgba(148, 163, 184, 0.38)';
-      solCtx.lineWidth = 1;
-      solCtx.strokeRect(c * sw + 3, r * sh + 3, sw - 6, sh - 6);
+      const sx = c * sw + 3;
+      const sy = r * sh + 3;
+      const cellW = sw - 6;
+      const cellH = sh - 6;
+      const cellGrad = solCtx.createLinearGradient(sx, sy, sx + cellW, sy + cellH);
+      cellGrad.addColorStop(0, '#163b6b');
+      cellGrad.addColorStop(0.55, '#0f294a');
+      cellGrad.addColorStop(1, '#091b34');
+      solCtx.fillStyle = cellGrad;
+      solCtx.fillRect(sx, sy, cellW, cellH);
+
+      // Fine silver photovoltaic busbars
+      solCtx.fillStyle = 'rgba(203, 213, 225, 0.32)';
+      solCtx.fillRect(sx + cellW * 0.32, sy, 1, cellH);
+      solCtx.fillRect(sx + cellW * 0.68, sy, 1, cellH);
+
+      solCtx.strokeStyle = 'rgba(148, 163, 184, 0.48)';
+      solCtx.lineWidth = 1.5;
+      solCtx.strokeRect(sx, sy, cellW, cellH);
       solHCtx.fillStyle = '#909090';
-      solHCtx.fillRect(c * sw + 3, r * sh + 3, sw - 6, sh - 6);
+      solHCtx.fillRect(sx, sy, cellW, cellH);
     }
   }
   const solarPanelMap = register(new THREE.CanvasTexture(solC), true, 1, 1);
-  const solarPanelNormal = heightCanvasToNormalTexture(solH, 2.2, 1, 1, maxAniso);
+  const solarPanelNormal = heightCanvasToNormalTexture(solH, 2.4, 1, 1, maxAniso);
   textures.push(solarPanelNormal);
 
   // 6. High-Detail Warm Architectural Travertine Plaza Deck (Richer tone so shadows & contrast pop!)
@@ -487,9 +521,17 @@ export function createCityTextureSet(
     grassRCtx.fillStyle = `rgb(${rv},${rv},${rv})`;
     grassRCtx.fillRect(gx, gy, 4, 6);
   }
+  // Subtle clover & wildflower highlights for crisp close-up ground read
+  const speckCount = lowCostMode ? 80 : 220;
+  for (let s = 0; s < speckCount; s++) {
+    const fx = hash2(s * 3.3, 14.1) * res;
+    const fy = hash2(19.7, s * 2.9) * res;
+    grassCtx.fillStyle = s % 5 === 0 ? 'rgba(254, 240, 138, 0.42)' : 'rgba(134, 239, 172, 0.34)';
+    grassCtx.fillRect(fx, fy, 2, 2);
+  }
   const grassMap = register(new THREE.CanvasTexture(grassC), true, 34, 34);
   const grassRoughness = register(new THREE.CanvasTexture(grassRC), false, 34, 34);
-  const grassNormal = heightCanvasToNormalTexture(grassH, 1.85, 34, 34, maxAniso);
+  const grassNormal = heightCanvasToNormalTexture(grassH, 2.0, 34, 34, maxAniso);
   textures.push(grassNormal);
 
   // 8. Architectural Dark-Slate Boulevard Paver Road (Crisp contrast with sidewalks & buildings!)

@@ -8,19 +8,39 @@ import {
   Eye,
   EyeOff,
   Gamepad2,
+  Hammer,
   Map as MapIcon,
   MapPin,
   MessageSquare,
   RotateCcw,
   Sparkles,
+  Trophy,
 } from 'lucide-react';
 import { DISTRICTS } from '../../data/districts';
 import { GAMES_CATALOG } from '../../data/gamesCatalog';
 import { OPEN_WORLD_DISTRICTS, WORLD_LANDMARKS } from '../../data/openWorldData';
+import { MINI_GAME_HUB_COORDS } from '../../data/miniGamesData';
+import { SANDBOX_ITEM_MAP, findBuildZoneAt } from '../../data/sandboxCatalog';
 import { useEduWorld } from '../../context/EduWorldContext';
-import { DistrictId, GameDefinition, NPCDefinition, WorldLandmarkDefinition } from '../../types/eduworld';
-import { playJumpTone, playLandTone } from '../../utils/audio';
+import {
+  BuildZoneDefinition,
+  DistrictId,
+  GameDefinition,
+  NPCDefinition,
+  PlacedSandboxObject,
+  SandboxTool,
+  WorldLandmarkDefinition,
+} from '../../types/eduworld';
+import { playCoinTone, playJumpTone, playLandTone } from '../../utils/audio';
 import { CityWorldHandle, buildSolarpunkCity } from './cityBuilder';
+import {
+  SandboxPlacementCandidate,
+  SandboxSystemHandle,
+  buildSandboxSystem,
+  getSandboxSupportHeight,
+  resolveSandboxCollisions,
+} from './sandboxSystem';
+import { SandboxToolbar } from './SandboxToolbar';
 import { SpatialBoxObstacle } from './spatialGrid';
 import { WorldMapModal } from './WorldMapModal';
 
@@ -34,6 +54,7 @@ type ProximityTarget =
   | { kind: 'building'; game: GameDefinition }
   | { kind: 'npc'; npc: NPCDefinition }
   | { kind: 'landmark'; landmark: WorldLandmarkDefinition }
+  | { kind: 'minigame-hub' }
   | null;
 
 const PLAYER_RADIUS = 0.48;
@@ -88,22 +109,29 @@ function createOutdoorEnvironment(renderer: THREE.WebGLRenderer): THREE.WebGLRen
 
   const fillCardGeo = new THREE.PlaneGeometry(16, 8);
   const fillCardMat = new THREE.MeshBasicMaterial({ color: 0xbae6fd, side: THREE.DoubleSide });
-  fillCardMat.color.multiplyScalar(0.9);
+  fillCardMat.color.multiplyScalar(0.95);
   const fillCard = new THREE.Mesh(fillCardGeo, fillCardMat);
   fillCard.position.set(-14, 9, -12);
   fillCard.lookAt(0, 0, 0);
 
+  const horizonGlowGeo = new THREE.TorusGeometry(21, 1.2, 8, 36);
+  const horizonGlowMat = new THREE.MeshBasicMaterial({ color: 0xe0f2fe });
+  horizonGlowMat.color.multiplyScalar(1.1);
+  const horizonGlow = new THREE.Mesh(horizonGlowGeo, horizonGlowMat);
+  horizonGlow.rotation.x = Math.PI / 2;
+  horizonGlow.position.y = 0.8;
+
   const cloudCardGeo = new THREE.CircleGeometry(4.5, 16);
   const cloudCardMat = new THREE.MeshBasicMaterial({ color: 0xf8fafc, side: THREE.DoubleSide });
-  cloudCardMat.color.multiplyScalar(1.15);
+  cloudCardMat.color.multiplyScalar(1.2);
   const cloudCard = new THREE.Mesh(cloudCardGeo, cloudCardMat);
   cloudCard.position.set(-8, 16, 12);
   cloudCard.lookAt(0, 0, 0);
 
-  envScene.add(skyMesh, sunCard, fillCard, cloudCard);
+  envScene.add(skyMesh, sunCard, fillCard, horizonGlow, cloudCard);
 
   const pmremGenerator = new THREE.PMREMGenerator(renderer);
-  const envRT = pmremGenerator.fromScene(envScene, 0.028);
+  const envRT = pmremGenerator.fromScene(envScene, 0.026);
   pmremGenerator.dispose();
   skyGeo.dispose();
   skyMat.dispose();
@@ -111,12 +139,20 @@ function createOutdoorEnvironment(renderer: THREE.WebGLRenderer): THREE.WebGLRen
   sunCardMat.dispose();
   fillCardGeo.dispose();
   fillCardMat.dispose();
+  horizonGlowGeo.dispose();
+  horizonGlowMat.dispose();
   cloudCardGeo.dispose();
   cloudCardMat.dispose();
   return envRT;
 }
 
-function getSupportHeightAt(x: number, z: number, feetY: number, world: CityWorldHandle): number {
+function getSupportHeightAt(
+  x: number,
+  z: number,
+  feetY: number,
+  world: CityWorldHandle,
+  sandboxItems: PlacedSandboxObject[],
+): number {
   let supportY = Math.hypot(x, z) <= 98 ? 0.01 : 0;
 
   // 1. Walkable arched bridges over Solarpunk Valley River
@@ -153,6 +189,12 @@ function getSupportHeightAt(x: number, z: number, feetY: number, world: CityWorl
     ) {
       if (b.topY > supportY) supportY = b.topY;
     }
+  }
+
+  // 4. Player-built Creative Sandbox blocks, stairs & roofs
+  if (sandboxItems.length > 0) {
+    const sbY = getSandboxSupportHeight(x, z, feetY, sandboxItems);
+    if (sbY > supportY) supportY = sbY;
   }
 
   return supportY;
@@ -206,7 +248,13 @@ function resolveHorizontalCollisions(
   pos: THREE.Vector3,
   vel: THREE.Vector3,
   world: CityWorldHandle,
+  sandboxItems: PlacedSandboxObject[],
 ) {
+  // 0. Player-built Creative Sandbox objects
+  if (sandboxItems.length > 0) {
+    resolveSandboxCollisions(pos, vel, PLAYER_RADIUS, sandboxItems);
+  }
+
   // 1. O(1) Building Podiums, Towers, Outer District Facilities & Bridge Guardrails
   const nearBoxes = world.spatialGrid.queryBoxes(pos.x, pos.z, 24);
   for (let i = 0; i < nearBoxes.length; i++) {
@@ -275,6 +323,8 @@ export const ExploreWorldView: React.FC = () => {
     player,
     openGame,
     openNpc,
+    openMiniGameHub,
+    miniGameProgress,
     visitDistrict,
     openWorldProgress,
     visitOuterDistrict,
@@ -282,10 +332,20 @@ export const ExploreWorldView: React.FC = () => {
     recordBridgeCrossed,
     teleportTarget,
     notify,
+    sandboxBuilds,
+    activeSandboxBuildId,
+    activeSandboxItems,
+    setActiveSandboxItems,
+    saveSandboxBuild,
+    selectSandboxBuild,
+    createNewSandboxDraft,
+    renameSandboxBuild,
+    deleteSandboxBuild,
   } = useEduWorld();
 
   const canvasMountRef = useRef<HTMLDivElement | null>(null);
   const worldRef = useRef<CityWorldHandle | null>(null);
+  const sandboxSystemRef = useRef<SandboxSystemHandle | null>(null);
   const playerPosRef = useRef(new THREE.Vector3(0, 0.01, 14));
   const playerVelRef = useRef(new THREE.Vector3(0, 0, 0));
   const playerYawRef = useRef(Math.PI);
@@ -295,6 +355,7 @@ export const ExploreWorldView: React.FC = () => {
   const keysRef = useRef<Record<string, boolean>>({});
   const joystickRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const jumpBufferRef = useRef(0);
+  const jumpHeldRef = useRef(false);
   const playerSettingsRef = useRef(player.settings);
   const avatarConfigRef = useRef(player.avatar);
   const visitedDistrictsRef = useRef(new Set(player.visitedDistricts));
@@ -312,7 +373,162 @@ export const ExploreWorldView: React.FC = () => {
   const [joyVisual, setJoyVisual] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isTouchDevice, setIsTouchDevice] = useState(false);
 
+  // Creative Sandbox Building Mode state & refs
+  const [buildMode, setBuildMode] = useState(false);
+  const [sandboxTool, setSandboxTool] = useState<SandboxTool>('place');
+  const [selectedItemId, setSelectedItemId] = useState('block-wood');
+  const [selectedVariant, setSelectedVariant] = useState('default');
+  const [gridSnap, setGridSnap] = useState(true);
+  const [buildRotY, setBuildRotY] = useState(0);
+  const [movingObjectId, setMovingObjectId] = useState<string | null>(null);
+  const [currentBuildZone, setCurrentBuildZone] = useState<BuildZoneDefinition | null>(null);
+  const [previewStatus, setPreviewStatus] = useState<{ valid: boolean; reason?: string } | null>(null);
+  const [undoCount, setUndoCount] = useState(0);
+  const [redoCount, setRedoCount] = useState(0);
+
+  const buildModeRef = useRef(buildMode);
+  buildModeRef.current = buildMode;
+  const sandboxToolRef = useRef(sandboxTool);
+  sandboxToolRef.current = sandboxTool;
+  const selectedItemIdRef = useRef(selectedItemId);
+  selectedItemIdRef.current = selectedItemId;
+  const selectedVariantRef = useRef(selectedVariant);
+  selectedVariantRef.current = selectedVariant;
+  const gridSnapRef = useRef(gridSnap);
+  gridSnapRef.current = gridSnap;
+  const buildRotYRef = useRef(buildRotY);
+  buildRotYRef.current = buildRotY;
+  const movingObjectIdRef = useRef(movingObjectId);
+  movingObjectIdRef.current = movingObjectId;
+  const activeSandboxItemsRef = useRef<PlacedSandboxObject[]>(activeSandboxItems);
+  activeSandboxItemsRef.current = activeSandboxItems;
+
+  const hoverNdcRef = useRef(new THREE.Vector2(0, 0));
+  const latestCandidateRef = useRef<SandboxPlacementCandidate | null>(null);
+  const undoStackRef = useRef<PlacedSandboxObject[][]>([]);
+  const redoStackRef = useRef<PlacedSandboxObject[][]>([]);
+
   const proximityRef = useRef<ProximityTarget>(null);
+
+  const commitSandboxChange = useCallback(
+    (nextItems: PlacedSandboxObject[]) => {
+      undoStackRef.current.push(activeSandboxItemsRef.current);
+      if (undoStackRef.current.length > 40) undoStackRef.current.shift();
+      redoStackRef.current = [];
+      setUndoCount(undoStackRef.current.length);
+      setRedoCount(0);
+      setActiveSandboxItems(nextItems);
+    },
+    [setActiveSandboxItems],
+  );
+
+  const handleSandboxUndo = useCallback(() => {
+    const prev = undoStackRef.current.pop();
+    if (!prev) return;
+    redoStackRef.current.push(activeSandboxItemsRef.current);
+    setUndoCount(undoStackRef.current.length);
+    setRedoCount(redoStackRef.current.length);
+    setActiveSandboxItems(prev);
+    setMovingObjectId(null);
+  }, [setActiveSandboxItems]);
+
+  const handleSandboxRedo = useCallback(() => {
+    const next = redoStackRef.current.pop();
+    if (!next) return;
+    undoStackRef.current.push(activeSandboxItemsRef.current);
+    setUndoCount(undoStackRef.current.length);
+    setRedoCount(redoStackRef.current.length);
+    setActiveSandboxItems(next);
+    setMovingObjectId(null);
+  }, [setActiveSandboxItems]);
+
+  const executeSandboxAction = useCallback(
+    (overrideAction?: 'place' | 'remove') => {
+      const candidate = latestCandidateRef.current;
+      const items = activeSandboxItemsRef.current;
+      const tool = overrideAction ?? sandboxToolRef.current;
+
+      if (tool === 'remove') {
+        if (!candidate?.targetObjectId) return;
+        commitSandboxChange(items.filter((it) => it.id !== candidate.targetObjectId));
+        playCoinTone(playerSettingsRef.current.soundEnabled);
+        return;
+      }
+
+      if (tool === 'move') {
+        if (!movingObjectIdRef.current) {
+          if (candidate?.targetObjectId) {
+            const target = items.find((it) => it.id === candidate.targetObjectId);
+            if (target) {
+              setSelectedItemId(target.itemId);
+              setBuildRotY(target.rotY);
+              setMovingObjectId(target.id);
+            }
+          }
+          return;
+        }
+        if (candidate && candidate.valid) {
+          const updated = items.map((it) =>
+            it.id === movingObjectIdRef.current
+              ? { ...it, x: candidate.x, y: candidate.y, z: candidate.z, rotY: buildRotYRef.current }
+              : it,
+          );
+          commitSandboxChange(updated);
+          setMovingObjectId(null);
+          playCoinTone(playerSettingsRef.current.soundEnabled);
+        }
+        return;
+      }
+
+      if (tool === 'duplicate') {
+        if (!candidate || !candidate.valid) return;
+        const picked = SANDBOX_ITEM_MAP.get(selectedItemIdRef.current);
+        if (!picked) return;
+        const newObj: PlacedSandboxObject = {
+          id: `sb-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+          itemId: picked.id,
+          x: candidate.x,
+          y: candidate.y,
+          z: candidate.z,
+          rotY: buildRotYRef.current,
+          ...(selectedVariantRef.current !== 'default' ? { materialVariant: selectedVariantRef.current } : {}),
+        };
+        commitSandboxChange([...items, newObj]);
+        playCoinTone(playerSettingsRef.current.soundEnabled);
+        return;
+      }
+
+      // Default: 'place'
+      if (!candidate || !candidate.valid) return;
+      const newObj: PlacedSandboxObject = {
+        id: `sb-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        itemId: selectedItemIdRef.current,
+        x: candidate.x,
+        y: candidate.y,
+        z: candidate.z,
+        rotY: buildRotYRef.current,
+        ...(selectedVariantRef.current !== 'default' ? { materialVariant: selectedVariantRef.current } : {}),
+      };
+      commitSandboxChange([...items, newObj]);
+      playCoinTone(playerSettingsRef.current.soundEnabled);
+    },
+    [commitSandboxChange],
+  );
+
+  // Sync placed sandbox objects into Three.js scene whenever activeSandboxItems updates
+  useEffect(() => {
+    sandboxSystemRef.current?.syncItems(activeSandboxItems);
+  }, [activeSandboxItems]);
+
+  // Highlight build zone perimeters when Build Mode is active
+  useEffect(() => {
+    sandboxSystemRef.current?.setZonesHighlighted(buildMode);
+    if (!buildMode) {
+      sandboxSystemRef.current?.hidePreview();
+      setMovingObjectId(null);
+      setPreviewStatus(null);
+    }
+  }, [buildMode]);
 
   useEffect(() => {
     playerSettingsRef.current = player.settings;
@@ -342,7 +558,7 @@ export const ExploreWorldView: React.FC = () => {
   const teleportImmediately = useCallback((x: number, z: number) => {
     const w = worldRef.current;
     w?.openWorld.ensureChunkBuiltAt(x, z);
-    const landY = w ? getSupportHeightAt(x, z, 2.0, w) : 0.16;
+    const landY = w ? getSupportHeightAt(x, z, 2.0, w, activeSandboxItemsRef.current) : 0.16;
     playerPosRef.current.set(x, landY, z);
     playerVelRef.current.set(0, 0, 0);
     if (w) {
@@ -356,12 +572,29 @@ export const ExploreWorldView: React.FC = () => {
     teleportImmediately(teleportTarget.x, teleportTarget.z);
   }, [teleportTarget, teleportImmediately]);
 
-  // Keyboard toggle for HUD (`H`), World Map (`M`), and Interact (`E`)
+  // Keyboard toggle for HUD (`H`), World Map (`M`), Build Mode (`B`), Rotate (`R`), Undo/Redo, and Interact (`E`)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ' && buildModeRef.current) {
+        e.preventDefault();
+        if (e.shiftKey) handleSandboxRedo();
+        else handleSandboxUndo();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyY' && buildModeRef.current) {
+        e.preventDefault();
+        handleSandboxRedo();
+        return;
+      }
+
       if (e.code === 'KeyH') {
         setHudHidden((v) => !v);
+      } else if (e.code === 'KeyB') {
+        setBuildMode((v) => !v);
+      } else if (e.code === 'KeyR' && buildModeRef.current) {
+        const step = gridSnapRef.current ? Math.PI / 2 : Math.PI / 12;
+        setBuildRotY((r) => (r + step) % (Math.PI * 2));
       } else if (e.code === 'KeyM') {
         setMapSnapshot({
           x: playerPosRef.current.x,
@@ -372,12 +605,16 @@ export const ExploreWorldView: React.FC = () => {
       } else if (e.code === 'Escape') {
         setMapOpen(false);
         setOuterMenuOpen(false);
+        setBuildMode(false);
+        setMovingObjectId(null);
       } else if (e.code === 'KeyE') {
         const target = proximityRef.current;
         if (target?.kind === 'building') {
           openGame(target.game);
         } else if (target?.kind === 'npc') {
           openNpc(target.npc);
+        } else if (target?.kind === 'minigame-hub') {
+          openMiniGameHub();
         } else if (target?.kind === 'landmark') {
           discoverLandmark(target.landmark.id);
           const linkedGame = GAMES_CATALOG.find((g) => g.id === target.landmark.linkedGameId);
@@ -387,7 +624,7 @@ export const ExploreWorldView: React.FC = () => {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [discoverLandmark, openGame, openNpc]);
+  }, [discoverLandmark, handleSandboxRedo, handleSandboxUndo, openGame, openMiniGameHub, openNpc]);
 
   // Initialize Three.js World once (or when qualityTier setting changes)
   useEffect(() => {
@@ -402,6 +639,7 @@ export const ExploreWorldView: React.FC = () => {
     try {
       renderer = new THREE.WebGLRenderer({
         antialias: !lowCostMode,
+        alpha: false,
         powerPreference: 'high-performance',
       });
     } catch {
@@ -411,7 +649,7 @@ export const ExploreWorldView: React.FC = () => {
 
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 0.92;
+    renderer.toneMappingExposure = 0.96;
     renderer.setPixelRatio(
       lowCostMode ? 1 : quality === 'high' ? Math.min(window.devicePixelRatio, 2) : Math.min(window.devicePixelRatio, 1.75),
     );
@@ -489,13 +727,20 @@ export const ExploreWorldView: React.FC = () => {
     world.avatar.root.rotation.y = playerYawRef.current;
     worldRef.current = world;
 
+    const sandboxSystem = buildSandboxSystem(scene, lowCostMode);
+    sandboxSystem.syncItems(activeSandboxItemsRef.current);
+    sandboxSystem.setZonesHighlighted(buildModeRef.current);
+    sandboxSystemRef.current = sandboxSystem;
+
     if (!isSoftwareGl) {
       renderer.compile(scene, camera);
     }
 
-    // Raycaster for building / NPC / landmark clicking (layer 1)
+    // Raycaster for building / NPC / landmark / hub clicking (layer 1)
     const raycaster = new THREE.Raycaster();
     raycaster.layers.set(1);
+    // Separate layer-0 raycaster for Creative Sandbox block stacking & ground picking
+    const sandboxRaycaster = new THREE.Raycaster();
     const pointerNdc = new THREE.Vector2();
     const baseHitProxies = [
       ...world.buildings.map((b) => b.hitProxy),
@@ -507,35 +752,102 @@ export const ExploreWorldView: React.FC = () => {
     const camRaycaster = new THREE.Raycaster();
     camRaycaster.layers.set(2);
 
+    const activeTouchPointers = new Map<number, { x: number; y: number }>();
     let activeCamPointerId: number | null = null;
+    let activeButton = 0;
     let dragDistance = 0;
     let lastX = 0;
     let lastY = 0;
+    let lastPinchDist: number | null = null;
+
+    const getPinchDistance = (): number | null => {
+      if (activeTouchPointers.size < 2) return null;
+      const iter = activeTouchPointers.values();
+      const p1 = iter.next().value!;
+      const p2 = iter.next().value!;
+      return Math.hypot(p2.x - p1.x, p2.y - p1.y);
+    };
+
+    const updateHoverNdc = (clientX: number, clientY: number) => {
+      const rect = renderer.domElement.getBoundingClientRect();
+      hoverNdcRef.current.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      hoverNdcRef.current.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    };
+
+    const onContextMenu = (e: MouseEvent) => {
+      if (buildModeRef.current) {
+        e.preventDefault();
+      }
+    };
 
     const onPointerDown = (e: PointerEvent) => {
+      updateHoverNdc(e.clientX, e.clientY);
+      if (e.pointerType === 'touch') {
+        activeTouchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (activeTouchPointers.size === 2) {
+          lastPinchDist = getPinchDistance();
+          dragDistance = 99; // prevent click trigger on pinch
+        }
+      }
       if (activeCamPointerId !== null) return;
       activeCamPointerId = e.pointerId;
+      activeButton = e.button;
       dragDistance = 0;
       lastX = e.clientX;
       lastY = e.clientY;
     };
 
     const onPointerMove = (e: PointerEvent) => {
+      updateHoverNdc(e.clientX, e.clientY);
+      if (e.pointerType === 'touch' && activeTouchPointers.has(e.pointerId)) {
+        activeTouchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (activeTouchPointers.size === 2) {
+          const pinch = getPinchDistance();
+          if (pinch !== null && lastPinchDist !== null) {
+            const deltaPinch = pinch - lastPinchDist;
+            camDistanceRef.current = THREE.MathUtils.clamp(camDistanceRef.current - deltaPinch * 0.045, 6.5, 24);
+          }
+          lastPinchDist = pinch;
+          return;
+        }
+      }
+
       if (activeCamPointerId !== e.pointerId) return;
       const dx = e.clientX - lastX;
       const dy = e.clientY - lastY;
       dragDistance += Math.abs(dx) + Math.abs(dy);
       lastX = e.clientX;
       lastY = e.clientY;
-      const sens = 0.0055 * (playerSettingsRef.current.cameraSensitivity || 1);
+      const sens = 0.0056 * (playerSettingsRef.current.cameraSensitivity || 1);
       camYawRef.current -= dx * sens;
-      camPitchRef.current = THREE.MathUtils.clamp(camPitchRef.current + dy * sens * 0.7, 0.1, 1.12);
+      camPitchRef.current = THREE.MathUtils.clamp(camPitchRef.current + dy * sens * 0.72, 0.08, 1.12);
     };
 
     const onPointerUp = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') {
+        activeTouchPointers.delete(e.pointerId);
+        if (activeTouchPointers.size < 2) lastPinchDist = null;
+      }
       if (activeCamPointerId !== e.pointerId) return;
+      const clickedButton = activeButton;
       activeCamPointerId = null;
+      updateHoverNdc(e.clientX, e.clientY);
+
       if (dragDistance < 6) {
+        if (buildModeRef.current) {
+          sandboxRaycaster.setFromCamera(hoverNdcRef.current, camera);
+          if (clickedButton === 2) {
+            const pickedId = sandboxSystem.pickPlacedObject(sandboxRaycaster);
+            if (pickedId) {
+              latestCandidateRef.current = { x: 0, y: 0, z: 0, rotY: 0, valid: true, targetObjectId: pickedId };
+              executeSandboxAction('remove');
+            }
+          } else {
+            executeSandboxAction();
+          }
+          return;
+        }
+
         const rect = renderer.domElement.getBoundingClientRect();
         pointerNdc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
         pointerNdc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -557,6 +869,8 @@ export const ExploreWorldView: React.FC = () => {
           } else if (data.kind === 'ambient-npc' && data.npcId) {
             const agent = world.livingNpcs.interactiveMap.get(data.npcId);
             if (agent) openNpc(agent.spec.npcInfo);
+          } else if (data.kind === 'minigame-hub') {
+            openMiniGameHub();
           } else if (data.kind === 'landmark' && data.landmarkId) {
             const lm = WORLD_LANDMARKS.find((l) => l.id === data.landmarkId);
             if (lm) {
@@ -583,6 +897,7 @@ export const ExploreWorldView: React.FC = () => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       if (e.code === 'Space') {
         e.preventDefault();
+        jumpHeldRef.current = true;
         if (!e.repeat) {
           jumpBufferRef.current = 0.14;
         }
@@ -590,9 +905,13 @@ export const ExploreWorldView: React.FC = () => {
       keysRef.current[e.code] = true;
     };
     const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        jumpHeldRef.current = false;
+      }
       keysRef.current[e.code] = false;
     };
 
+    renderer.domElement.addEventListener('contextmenu', onContextMenu);
     renderer.domElement.addEventListener('pointerdown', onPointerDown);
     window.addEventListener('pointermove', onPointerMove);
     window.addEventListener('pointerup', onPointerUp);
@@ -622,9 +941,15 @@ export const ExploreWorldView: React.FC = () => {
     let airTime = 0;
     let landSquash = 0;
     let takeoffStretch = 0;
+    let currentMaxSpeed = 12.5;
+    let turnRateVel = 0;
+    let headLeadYaw = 0;
+    let visCamYaw = camYawRef.current;
+    let visCamPitch = camPitchRef.current;
     let currentCamDist = camDistanceRef.current;
     let camFollowY = playerPosRef.current.y;
     const camPivot = new THREE.Vector3(playerPosRef.current.x, playerPosRef.current.y + 1.8, playerPosRef.current.z);
+    const whiskerOrigin = new THREE.Vector3();
     const sunTexelWorld = (shadowBounds * 2) / shadowRes;
 
     function afterDraw(cb: () => void) {
@@ -653,7 +978,7 @@ export const ExploreWorldView: React.FC = () => {
       const pos = playerPosRef.current;
       const vel = playerVelRef.current;
 
-      // 1. Unified Camera-Relative Movement Input (Keyboard + Virtual Joystick)
+      // 1. Unified Camera-Relative Movement Input (Keyboard + Mobile Virtual Joystick)
       let inputX = joystickRef.current.x;
       let inputZ = joystickRef.current.y;
       if (k['KeyA'] || k['ArrowLeft']) inputX -= 1;
@@ -663,28 +988,29 @@ export const ExploreWorldView: React.FC = () => {
 
       const rawMag = Math.hypot(inputX, inputZ);
       const hasInput = rawMag > 0.06;
-      const isSprinting = !!(k['ShiftLeft'] || k['ShiftRight']);
-      const maxSpeed = isSprinting ? 18.5 : 12.5;
+      const clampedMag = Math.min(1, rawMag);
+      const joySprint = Math.hypot(joystickRef.current.x, joystickRef.current.y) > 0.88;
+      const isSprinting = !!(k['ShiftLeft'] || k['ShiftRight'] || joySprint);
+      currentMaxSpeed = THREE.MathUtils.damp(currentMaxSpeed, isSprinting ? 18.5 : 12.5, 9.5, delta);
 
       let targetVx = 0;
       let targetVz = 0;
 
       if (hasInput) {
-        const clampedMag = Math.min(1, rawMag);
         const nx = inputX / rawMag;
         const nz = inputZ / rawMag;
-        const yaw = camYawRef.current;
+        const yaw = visCamYaw;
         const sinY = Math.sin(yaw);
         const cosY = Math.cos(yaw);
 
         _moveDir.set(nx * cosY + nz * sinY, 0, -nx * sinY + nz * cosY).normalize();
-        const targetSpeed = maxSpeed * clampedMag;
+        const targetSpeed = currentMaxSpeed * clampedMag;
         targetVx = _moveDir.x * targetSpeed;
         targetVz = _moveDir.z * targetSpeed;
       }
 
-      // Smooth Acceleration & Crisp Deceleration (Zero sliding when stopped)
-      const accelLambda = hasInput ? (grounded ? 15 : 7.5) : grounded ? 20 : 2.2;
+      // Smooth Acceleration & Crisp Deceleration (Zero idle sliding)
+      const accelLambda = hasInput ? (grounded ? 12.5 : 7.5) : grounded ? 18 : 2.2;
       vel.x = THREE.MathUtils.damp(vel.x, targetVx, accelLambda, delta);
       vel.z = THREE.MathUtils.damp(vel.z, targetVz, accelLambda, delta);
 
@@ -693,7 +1019,7 @@ export const ExploreWorldView: React.FC = () => {
         vel.z = 0;
       }
 
-      // 2. Jump Physics (Single Grounded Jump + Coyote Time + Input Buffer)
+      // 2. Jump Physics (Single Grounded Jump + Variable Apex + Coyote Time + Input Buffer)
       if (grounded) {
         coyoteTimer = 0.11;
       } else {
@@ -710,25 +1036,31 @@ export const ExploreWorldView: React.FC = () => {
         jumpBufferRef.current = 0;
         takeoffStretch = 1;
         airTime = 0;
+        world.triggerMotionPuff(pos.x, pos.y, pos.z, 0.72);
         playJumpTone(playerSettingsRef.current.soundEnabled);
       }
 
-      // Apply horizontal movement & solve OBB / Obstacle collisions
+      // Apply horizontal movement & solve OBB / Obstacle / Sandbox collisions
+      const prevX = pos.x;
+      const prevZ = pos.z;
       pos.x += vel.x * delta;
       pos.z += vel.z * delta;
-      resolveHorizontalCollisions(pos, vel, world);
+      resolveHorizontalCollisions(pos, vel, world, activeSandboxItemsRef.current);
+      const actualMovedSpeed = delta > 0.0001 ? Math.hypot(pos.x - prevX, pos.z - prevZ) / delta : 0;
 
-      // Apply gravity & vertical landing on terrain / platforms
+      // Apply gravity & variable short-hop release + vertical landing
       if (!grounded) {
-        vel.y += GRAVITY * delta;
+        const gravScale = !jumpHeldRef.current && vel.y > 4.2 ? 1.45 : 1.0;
+        vel.y += GRAVITY * gravScale * delta;
         airTime += delta;
       }
       pos.y += vel.y * delta;
 
-      const supportY = getSupportHeightAt(pos.x, pos.z, pos.y, world);
+      const supportY = getSupportHeightAt(pos.x, pos.z, pos.y, world, activeSandboxItemsRef.current);
       if (pos.y <= supportY) {
         if (!grounded && vel.y < -3.5 && airTime > 0.12) {
-          landSquash = THREE.MathUtils.clamp(-vel.y / 18, 0.25, 1.0);
+          landSquash = THREE.MathUtils.clamp(-vel.y / 17.5, 0.28, 1.0);
+          world.triggerMotionPuff(pos.x, supportY, pos.z, landSquash);
           playLandTone(playerSettingsRef.current.soundEnabled);
         }
         pos.y = supportY;
@@ -739,9 +1071,10 @@ export const ExploreWorldView: React.FC = () => {
         grounded = false;
       }
 
-      // 3. Smooth Natural Turning System
-      const horizSpeed = Math.hypot(vel.x, vel.z);
+      // 3. Smooth Natural Turning System (Angular-velocity damped S-curve + head look-lead)
+      const horizSpeed = Math.min(Math.hypot(vel.x, vel.z), actualMovedSpeed + 1.2);
       let yawDeltaSigned = 0;
+      let targetHeadLead = 0;
       if (hasInput || horizSpeed > 0.6) {
         const dirX = hasInput ? _moveDir.x : vel.x;
         const dirZ = hasInput ? _moveDir.z : vel.z;
@@ -750,13 +1083,18 @@ export const ExploreWorldView: React.FC = () => {
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
 
-        // Slightly gentler rate on 180-degree reversals so turning feels weighty and natural
         const absDiff = Math.abs(diff);
-        const turnRate = grounded ? (absDiff > 2.2 ? 9.5 : 13.5) : 5.5;
-        const step = diff * (1 - Math.exp(-turnRate * delta));
+        const turnRate = grounded ? (absDiff > 2.2 ? 10.2 : 14.2) : 6.0;
+        const desiredTurnVel = diff * turnRate;
+        turnRateVel = THREE.MathUtils.damp(turnRateVel, desiredTurnVel, 18, delta);
+        const step = Math.abs(turnRateVel * delta) > absDiff ? diff : turnRateVel * delta;
         playerYawRef.current += step;
         yawDeltaSigned = delta > 0.0001 ? step / delta : 0;
+        targetHeadLead = THREE.MathUtils.clamp(diff * 0.34, -0.38, 0.38);
+      } else {
+        turnRateVel = THREE.MathUtils.damp(turnRateVel, 0, 16, delta);
       }
+      headLeadYaw = THREE.MathUtils.damp(headLeadYaw, targetHeadLead, 11, delta);
 
       // 4. Procedural Character Animations (Idle, Walk, Run, Turn Bank, Jump, Land)
       const av = world.avatar;
@@ -774,19 +1112,20 @@ export const ExploreWorldView: React.FC = () => {
       );
 
       takeoffStretch = THREE.MathUtils.damp(takeoffStretch, 0, 12, delta);
-      landSquash = THREE.MathUtils.damp(landSquash, 0, 11, delta);
+      landSquash = THREE.MathUtils.damp(landSquash, 0, 10.5, delta);
 
       const scaleY = 1 + takeoffStretch * 0.09 - landSquash * 0.14;
       const scaleXZ = 1 / Math.sqrt(Math.max(0.7, scaleY));
       av.bodyGroup.scale.set(scaleXZ, scaleY, scaleXZ);
+      world.updateMotionPuffs(delta);
 
       if (!grounded) {
         // Mid-air Jump / Fall animation
         const climbBlend = THREE.MathUtils.clamp(vel.y / 11, -1, 1);
-        const targetLegL = climbBlend > 0 ? -0.45 * climbBlend : 0.28 * -climbBlend;
-        const targetLegR = climbBlend > 0 ? 0.35 * climbBlend : -0.18 * -climbBlend;
-        const targetArmRaise = climbBlend > 0 ? -0.55 * climbBlend : -0.35;
-        const targetArmSplay = 0.22;
+        const targetLegL = climbBlend > 0 ? -0.48 * climbBlend : 0.3 * -climbBlend;
+        const targetLegR = climbBlend > 0 ? 0.36 * climbBlend : -0.2 * -climbBlend;
+        const targetArmRaise = climbBlend > 0 ? -0.58 * climbBlend : -0.36;
+        const targetArmSplay = 0.24;
 
         av.leftLeg.rotation.x = THREE.MathUtils.damp(av.leftLeg.rotation.x, targetLegL, 12, delta);
         av.rightLeg.rotation.x = THREE.MathUtils.damp(av.rightLeg.rotation.x, targetLegR, 12, delta);
@@ -803,23 +1142,24 @@ export const ExploreWorldView: React.FC = () => {
           delta,
         );
         av.bodyGroup.rotation.y = THREE.MathUtils.damp(av.bodyGroup.rotation.y, 0, 10, delta);
+        av.headGroup.rotation.y = headLeadYaw;
       } else if (horizSpeed > 0.35) {
-        // Walk / Run cycle scaled naturally with horizontal velocity
+        // Walk / Run cycle scaled naturally with horizontal velocity + landing cushion
         const speedNorm = THREE.MathUtils.clamp(horizSpeed / 12.5, 0, 1.5);
         walkCycle += delta * (6.5 + speedNorm * 6.8);
-        const swingAmp = Math.min(0.75, 0.32 + speedNorm * 0.36);
+        const swingAmp = Math.min(0.76, 0.32 + speedNorm * 0.36);
         const swing = Math.sin(walkCycle) * swingAmp;
-        const strideBob = Math.abs(Math.sin(walkCycle)) * (0.045 + speedNorm * 0.045);
+        const strideBob = Math.abs(Math.sin(walkCycle)) * (0.048 + speedNorm * 0.045) - landSquash * 0.12;
 
         av.leftLeg.rotation.x = THREE.MathUtils.damp(av.leftLeg.rotation.x, swing, 18, delta);
         av.rightLeg.rotation.x = THREE.MathUtils.damp(av.rightLeg.rotation.x, -swing, 18, delta);
         av.leftArm.rotation.x = THREE.MathUtils.damp(av.leftArm.rotation.x, -swing * 0.85, 18, delta);
         av.rightArm.rotation.x = THREE.MathUtils.damp(av.rightArm.rotation.x, swing * 0.85, 18, delta);
-        av.leftArm.rotation.z = THREE.MathUtils.damp(av.leftArm.rotation.z, -0.05 * speedNorm, 12, delta);
-        av.rightArm.rotation.z = THREE.MathUtils.damp(av.rightArm.rotation.z, 0.05 * speedNorm, 12, delta);
+        av.leftArm.rotation.z = THREE.MathUtils.damp(av.leftArm.rotation.z, -0.05 * speedNorm - landSquash * 0.16, 12, delta);
+        av.rightArm.rotation.z = THREE.MathUtils.damp(av.rightArm.rotation.z, 0.05 * speedNorm + landSquash * 0.16, 12, delta);
 
         av.bodyGroup.position.y = THREE.MathUtils.damp(av.bodyGroup.position.y, strideBob, 18, delta);
-        av.bodyGroup.rotation.x = THREE.MathUtils.damp(av.bodyGroup.rotation.x, speedNorm * 0.11, 10, delta);
+        av.bodyGroup.rotation.x = THREE.MathUtils.damp(av.bodyGroup.rotation.x, speedNorm * 0.11 + landSquash * 0.14, 10, delta);
         av.bodyGroup.rotation.y = THREE.MathUtils.damp(
           av.bodyGroup.rotation.y,
           Math.sin(walkCycle) * 0.07 * speedNorm,
@@ -828,56 +1168,83 @@ export const ExploreWorldView: React.FC = () => {
         );
         av.bodyGroup.rotation.z = THREE.MathUtils.damp(
           av.bodyGroup.rotation.z,
-          THREE.MathUtils.clamp(-yawDeltaSigned * 0.03, -0.18, 0.18),
+          THREE.MathUtils.clamp(-yawDeltaSigned * 0.032, -0.18, 0.18),
           10,
           delta,
         );
-        av.headGroup.rotation.y = THREE.MathUtils.damp(av.headGroup.rotation.y, 0, 10, delta);
+        av.headGroup.rotation.y = headLeadYaw;
       } else {
-        // Calm Idle breathing animation
+        // Calm Idle breathing animation + landing crouch recovery
         const breath = Math.sin(elapsed * 2.1);
-        av.leftLeg.rotation.x = THREE.MathUtils.damp(av.leftLeg.rotation.x, 0, 14, delta);
-        av.rightLeg.rotation.x = THREE.MathUtils.damp(av.rightLeg.rotation.x, 0, 14, delta);
+        av.leftLeg.rotation.x = THREE.MathUtils.damp(av.leftLeg.rotation.x, -landSquash * 0.16, 14, delta);
+        av.rightLeg.rotation.x = THREE.MathUtils.damp(av.rightLeg.rotation.x, -landSquash * 0.16, 14, delta);
         av.leftArm.rotation.x = THREE.MathUtils.damp(av.leftArm.rotation.x, breath * 0.035, 12, delta);
         av.rightArm.rotation.x = THREE.MathUtils.damp(av.rightArm.rotation.x, -breath * 0.035, 12, delta);
-        av.leftArm.rotation.z = THREE.MathUtils.damp(av.leftArm.rotation.z, -0.03, 10, delta);
-        av.rightArm.rotation.z = THREE.MathUtils.damp(av.rightArm.rotation.z, 0.03, 10, delta);
-        av.bodyGroup.position.y = THREE.MathUtils.damp(av.bodyGroup.position.y, (breath + 1) * 0.012, 10, delta);
-        av.bodyGroup.rotation.x = THREE.MathUtils.damp(av.bodyGroup.rotation.x, 0, 12, delta);
+        av.leftArm.rotation.z = THREE.MathUtils.damp(av.leftArm.rotation.z, -0.03 - landSquash * 0.18, 10, delta);
+        av.rightArm.rotation.z = THREE.MathUtils.damp(av.rightArm.rotation.z, 0.03 + landSquash * 0.18, 10, delta);
+        av.bodyGroup.position.y = THREE.MathUtils.damp(
+          av.bodyGroup.position.y,
+          (breath + 1) * 0.012 - landSquash * 0.13,
+          12,
+          delta,
+        );
+        av.bodyGroup.rotation.x = THREE.MathUtils.damp(av.bodyGroup.rotation.x, landSquash * 0.15, 12, delta);
         av.bodyGroup.rotation.y = THREE.MathUtils.damp(av.bodyGroup.rotation.y, 0, 12, delta);
         av.bodyGroup.rotation.z = THREE.MathUtils.damp(av.bodyGroup.rotation.z, 0, 12, delta);
         av.headGroup.rotation.y = THREE.MathUtils.damp(av.headGroup.rotation.y, Math.sin(elapsed * 0.9) * 0.06, 6, delta);
       }
 
-      // 5. Smooth Third-Person Chase Camera + Anti-Clipping Occlusion Solver
+      // 5. Smooth Third-Person Chase Camera + Dynamic Sprint FOV + Multi-Probe Anti-Clipping
       const targetDist = camDistanceRef.current;
-      const pitch = camPitchRef.current;
-      const cy = camYawRef.current;
+      visCamYaw = THREE.MathUtils.damp(visCamYaw, camYawRef.current, 26, delta);
+      visCamPitch = THREE.MathUtils.damp(visCamPitch, camPitchRef.current, 26, delta);
 
-      camFollowY = THREE.MathUtils.damp(camFollowY, pos.y, grounded ? 14 : 9, delta);
+      const targetFov = isSprinting && horizSpeed > 11.5 ? 59 : 55;
+      if (Math.abs(camera.fov - targetFov) > 0.05) {
+        camera.fov = THREE.MathUtils.damp(camera.fov, targetFov, 7, delta);
+        camera.updateProjectionMatrix();
+      }
+
+      camFollowY = THREE.MathUtils.damp(camFollowY, pos.y, grounded ? 12 : 7.5, delta);
       camPivot.x = THREE.MathUtils.damp(camPivot.x, pos.x, 18, delta);
       camPivot.z = THREE.MathUtils.damp(camPivot.z, pos.z, 18, delta);
       camPivot.y = camFollowY + 1.85;
 
-      const cosPitch = Math.cos(pitch);
+      const cosPitch = Math.cos(visCamPitch);
       _camRayDir.set(
-        Math.sin(cy) * cosPitch,
-        Math.sin(pitch),
-        Math.cos(cy) * cosPitch,
+        Math.sin(visCamYaw) * cosPitch,
+        Math.sin(visCamPitch),
+        Math.cos(visCamYaw) * cosPitch,
       ).normalize();
 
-      // Raycast from player shoulder pivot toward camera against inner & outer building occluders
+      // Multi-probe raycast (center + left/right shoulder whiskers) against inner buildings, outer facilities & sandbox blocks
+      const sandboxOccluders = sandboxSystem.getCameraOccluders();
       let clippedDist = targetDist;
-      camRaycaster.set(camPivot, _camRayDir);
+      const rightX = Math.cos(visCamYaw);
+      const rightZ = -Math.sin(visCamYaw);
+      const whiskerOffsets = [0, -0.45, 0.45];
+
       camRaycaster.far = targetDist;
-      const camHitsInner = camRaycaster.intersectObjects(world.cameraOccluders, false);
-      if (camHitsInner.length > 0 && camHitsInner[0].distance < clippedDist) {
-        clippedDist = Math.max(2.6, camHitsInner[0].distance - 0.55);
-      }
-      if (world.openWorld.cameraOccluders.length > 0) {
-        const camHitsOuter = camRaycaster.intersectObjects(world.openWorld.cameraOccluders, false);
-        if (camHitsOuter.length > 0 && camHitsOuter[0].distance < clippedDist) {
-          clippedDist = Math.max(2.6, camHitsOuter[0].distance - 0.55);
+      for (let w = 0; w < whiskerOffsets.length; w++) {
+        const off = whiskerOffsets[w];
+        whiskerOrigin.set(camPivot.x + rightX * off, camPivot.y, camPivot.z + rightZ * off);
+        camRaycaster.set(whiskerOrigin, _camRayDir);
+
+        const camHitsInner = camRaycaster.intersectObjects(world.cameraOccluders, false);
+        if (camHitsInner.length > 0 && camHitsInner[0].distance < clippedDist) {
+          clippedDist = Math.max(2.6, camHitsInner[0].distance - 0.55);
+        }
+        if (world.openWorld.cameraOccluders.length > 0) {
+          const camHitsOuter = camRaycaster.intersectObjects(world.openWorld.cameraOccluders, false);
+          if (camHitsOuter.length > 0 && camHitsOuter[0].distance < clippedDist) {
+            clippedDist = Math.max(2.6, camHitsOuter[0].distance - 0.55);
+          }
+        }
+        if (sandboxOccluders.length > 0) {
+          const camHitsSandbox = camRaycaster.intersectObjects(sandboxOccluders, false);
+          if (camHitsSandbox.length > 0 && camHitsSandbox[0].distance < clippedDist) {
+            clippedDist = Math.max(2.6, camHitsSandbox[0].distance - 0.55);
+          }
         }
       }
 
@@ -886,7 +1253,9 @@ export const ExploreWorldView: React.FC = () => {
       currentCamDist = THREE.MathUtils.damp(currentCamDist, clippedDist, distLambda, delta);
 
       _desiredCamPos.copy(camPivot).addScaledVector(_camRayDir, currentCamDist);
-      const minCamGround = getSupportHeightAt(_desiredCamPos.x, _desiredCamPos.z, _desiredCamPos.y, world) + 0.55;
+      const minCamGround =
+        getSupportHeightAt(_desiredCamPos.x, _desiredCamPos.z, _desiredCamPos.y, world, activeSandboxItemsRef.current) +
+        0.55;
       if (_desiredCamPos.y < minCamGround) {
         _desiredCamPos.y = minCamGround;
       }
@@ -894,6 +1263,23 @@ export const ExploreWorldView: React.FC = () => {
       camera.position.copy(_desiredCamPos);
       _camTarget.set(camPivot.x, camFollowY + 1.65, camPivot.z);
       camera.lookAt(_camTarget);
+
+      // Update Creative Sandbox placement ghost preview when Build Mode is active
+      if (buildModeRef.current) {
+        sandboxRaycaster.setFromCamera(hoverNdcRef.current, camera);
+        const cand = sandboxSystem.updatePreview(
+          true,
+          sandboxToolRef.current,
+          sandboxRaycaster,
+          activeSandboxItemsRef.current,
+          selectedItemIdRef.current,
+          buildRotYRef.current,
+          gridSnapRef.current,
+          world.spatialGrid,
+          movingObjectIdRef.current,
+        );
+        latestCandidateRef.current = cand;
+      }
 
       // Update Building LODs (inner + outer open-world) & Texel-Snapped Player-Following Sun Shadows
       for (let i = 0; i < world.lods.length; i++) {
@@ -1003,6 +1389,21 @@ export const ExploreWorldView: React.FC = () => {
           recordBridgeCrossed(bridgeHit.bridgeId);
         }
 
+        // Mini Game Hub Pavilion proximity check
+        const hubDist = Math.hypot(pos.x - MINI_GAME_HUB_COORDS.x, pos.z - MINI_GAME_HUB_COORDS.z);
+        if (hubDist < 12.5 && hubDist < closestDist) {
+          closestDist = hubDist;
+          closestTarget = { kind: 'minigame-hub' };
+        }
+
+        // Update Build Mode zone & validation preview badge (~6 Hz)
+        if (buildModeRef.current) {
+          const zAtPlayer = findBuildZoneAt(pos.x, pos.z);
+          setCurrentBuildZone((curr) => (curr?.id === zAtPlayer?.id ? curr : zAtPlayer));
+          const c = latestCandidateRef.current;
+          setPreviewStatus(c ? { valid: c.valid, reason: c.reason } : null);
+        }
+
         const prev = proximityRef.current;
         const changed =
           (prev === null) !== (closestTarget === null) ||
@@ -1070,6 +1471,7 @@ export const ExploreWorldView: React.FC = () => {
       resizeObserver.disconnect();
       renderer.domElement.removeEventListener('webglcontextlost', onContextLost);
       renderer.domElement.removeEventListener('webglcontextrestored', onContextRestored);
+      renderer.domElement.removeEventListener('contextmenu', onContextMenu);
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', onPointerUp);
@@ -1077,14 +1479,18 @@ export const ExploreWorldView: React.FC = () => {
       renderer.domElement.removeEventListener('wheel', onWheel);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      sandboxSystem.dispose();
+      sandboxSystemRef.current = null;
       world.dispose();
       envRT.dispose();
       renderer.dispose();
     };
   }, [
     discoverLandmark,
+    executeSandboxAction,
     notify,
     openGame,
+    openMiniGameHub,
     openNpc,
     player.settings.qualityTier,
     recordBridgeCrossed,
@@ -1122,7 +1528,12 @@ export const ExploreWorldView: React.FC = () => {
 
   const handleMobileJump = (e: React.PointerEvent<HTMLButtonElement>) => {
     e.stopPropagation();
+    jumpHeldRef.current = true;
     jumpBufferRef.current = 0.14;
+  };
+  const handleMobileJumpEnd = (e: React.PointerEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    jumpHeldRef.current = false;
   };
 
   // Virtual Joystick Handlers
@@ -1162,21 +1573,21 @@ export const ExploreWorldView: React.FC = () => {
       )}
 
       {/* Minimal Top-Left Location & Controls Hint */}
-      {!hudHidden && (
+      {!hudHidden && !buildMode && (
         <div className="pointer-events-none absolute top-4 left-4 z-10 flex flex-col gap-1.5">
           <div className="pointer-events-auto inline-flex items-center gap-2.5 rounded-xl bg-white/92 border border-slate-200 px-3.5 py-2 shadow-sm">
             <Compass className="w-4 h-4 text-sky-600 shrink-0" />
             <span className="text-sm font-semibold text-slate-900 whitespace-nowrap">{currentDistrictName}</span>
             <span className="text-slate-300" aria-hidden="true">·</span>
             <span className="text-xs text-slate-500 whitespace-nowrap hidden sm:inline">
-              WASD Move · Shift Run · Space Jump · M Map · Drag Orbit
+              WASD Move · Shift Run · Space Jump · B Build · M Map · Drag Orbit
             </span>
           </div>
         </div>
       )}
 
       {/* Proximity Action Prompt */}
-      {!hudHidden && proximity && (
+      {!hudHidden && !buildMode && proximity && (
         <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-10">
           <button
             type="button"
@@ -1185,6 +1596,8 @@ export const ExploreWorldView: React.FC = () => {
                 openGame(proximity.game);
               } else if (proximity.kind === 'npc') {
                 openNpc(proximity.npc);
+              } else if (proximity.kind === 'minigame-hub') {
+                openMiniGameHub();
               } else {
                 discoverLandmark(proximity.landmark.id);
                 const linked = GAMES_CATALOG.find((g) => g.id === proximity.landmark.linkedGameId);
@@ -1207,6 +1620,14 @@ export const ExploreWorldView: React.FC = () => {
                 <span className="text-sm font-semibold">
                   Talk to {proximity.npc.name}
                   <span className="hidden sm:inline font-normal text-slate-300"> · {proximity.npc.role}</span>
+                </span>
+                <span className="font-mono-tabular text-xs bg-white/15 px-1.5 py-0.5 rounded">E</span>
+              </>
+            ) : proximity.kind === 'minigame-hub' ? (
+              <>
+                <Trophy className="w-4 h-4 text-amber-400 shrink-0" />
+                <span className="text-sm font-semibold">
+                  Enter Mini Game Hub (7 Challenges)
                 </span>
                 <span className="font-mono-tabular text-xs bg-white/15 px-1.5 py-0.5 rounded">E</span>
               </>
@@ -1243,6 +1664,9 @@ export const ExploreWorldView: React.FC = () => {
           <button
             type="button"
             onPointerDown={handleMobileJump}
+            onPointerUp={handleMobileJumpEnd}
+            onPointerCancel={handleMobileJumpEnd}
+            onPointerLeave={handleMobileJumpEnd}
             className={`${isTouchDevice ? 'flex' : 'md:hidden flex'} absolute bottom-24 right-5 z-10 w-16 h-16 rounded-full bg-white/90 border border-slate-300 shadow-sm items-center justify-center text-slate-800 active:bg-sky-600 active:text-white active:border-sky-600 transition-colors touch-none`}
             aria-label="Jump"
           >
@@ -1251,111 +1675,177 @@ export const ExploreWorldView: React.FC = () => {
         </>
       )}
 
-      {/* Collapsible Unified Bottom Control Dock */}
-      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-1.5 max-w-[95vw]">
-        {/* Expandable 6 Outer Open-World Districts Fast-Travel Tray */}
-        {!hudHidden && outerMenuOpen && (
-          <div className="flex flex-wrap items-center justify-center gap-1.5 rounded-xl bg-white/95 border border-slate-200 px-3 py-2 shadow-lg">
-            <span className="text-xs font-semibold text-slate-500 px-1 whitespace-nowrap">Outer Districts:</span>
-            {OPEN_WORLD_DISTRICTS.map((ow) => (
+      {/* Collapsible Unified Bottom Control Dock (Hidden while Build Mode toolbar is active) */}
+      {!buildMode && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-1.5 max-w-[95vw]">
+          {/* Expandable 6 Outer Open-World Districts Fast-Travel Tray */}
+          {!hudHidden && outerMenuOpen && (
+            <div className="flex flex-wrap items-center justify-center gap-1.5 rounded-xl bg-white/95 border border-slate-200 px-3 py-2 shadow-lg">
+              <span className="text-xs font-semibold text-slate-500 px-1 whitespace-nowrap">Outer Districts:</span>
+              {OPEN_WORLD_DISTRICTS.map((ow) => (
+                <button
+                  key={ow.id}
+                  type="button"
+                  onClick={() => {
+                    handleFastTravelCoords(ow.plazaCoords.x, ow.plazaCoords.z + 8, ow.name);
+                    setOuterMenuOpen(false);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-700 hover:bg-sky-50 hover:text-sky-700 transition-colors whitespace-nowrap shrink-0"
+                >
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: ow.accentHex }} />
+                  <span>{ow.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setHudHidden((v) => !v)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-white/95 border border-slate-200 px-3 py-1 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50 transition-colors whitespace-nowrap"
+          >
+            {hudHidden ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+            <span>{hudHidden ? 'Show City Controls (H)' : 'Hide Controls (H)'}</span>
+          </button>
+
+          {!hudHidden && (
+            <div className="flex flex-wrap items-center justify-center gap-1.5 rounded-xl bg-white/95 border border-slate-200 px-3 py-2 shadow-md">
+              <span className="text-xs font-medium text-slate-500 px-1.5 hidden sm:inline whitespace-nowrap">
+                Fast Travel:
+              </span>
+              {DISTRICTS.map((d) => (
+                <button
+                  key={d.id}
+                  type="button"
+                  onClick={() => handleDistrictJump(d.id)}
+                  className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-700 hover:bg-sky-50 hover:text-sky-700 transition-colors whitespace-nowrap shrink-0"
+                >
+                  {d.name}
+                </button>
+              ))}
               <button
-                key={ow.id}
+                type="button"
+                onClick={() => setOuterMenuOpen((v) => !v)}
+                className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                  outerMenuOpen ? 'bg-sky-100 text-sky-800' : 'text-sky-700 hover:bg-sky-50'
+                }`}
+              >
+                <span>Outer Districts</span>
+                {outerMenuOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
+              </button>
+              <span className="h-4 w-px bg-slate-200 mx-0.5" aria-hidden="true" />
+              <button
+                type="button"
+                onClick={() => setBuildMode(true)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 transition-colors whitespace-nowrap shrink-0"
+                title="Enter Creative Sandbox Build Mode (B)"
+              >
+                <Hammer className="w-3.5 h-3.5" />
+                <span>Build Mode (B)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => openMiniGameHub()}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-amber-500 text-white hover:bg-amber-600 transition-colors whitespace-nowrap shrink-0"
+                title="Open Mini Game Hub (7 Playable Games)"
+              >
+                <Trophy className="w-3.5 h-3.5" />
+                <span>Mini Game Hub</span>
+              </button>
+              <button
                 type="button"
                 onClick={() => {
-                  handleFastTravelCoords(ow.plazaCoords.x, ow.plazaCoords.z + 8, ow.name);
-                  setOuterMenuOpen(false);
+                  setMapSnapshot({
+                    x: playerPosRef.current.x,
+                    z: playerPosRef.current.z,
+                    yaw: playerYawRef.current,
+                  });
+                  setMapOpen(true);
                 }}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-700 hover:bg-sky-50 hover:text-sky-700 transition-colors whitespace-nowrap shrink-0"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-slate-800 bg-slate-100 hover:bg-sky-50 hover:text-sky-700 transition-colors whitespace-nowrap shrink-0"
+                title="Open Interactive World Map (M)"
               >
-                <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: ow.accentHex }} />
-                <span>{ow.name}</span>
+                <MapIcon className="w-3.5 h-3.5" />
+                <span>World Map (M)</span>
               </button>
-            ))}
-          </div>
-        )}
-
-        <button
-          type="button"
-          onClick={() => setHudHidden((v) => !v)}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-white/95 border border-slate-200 px-3 py-1 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50 transition-colors whitespace-nowrap"
-        >
-          {hudHidden ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-          <span>{hudHidden ? 'Show City Controls (H)' : 'Hide Controls (H)'}</span>
-        </button>
-
-        {!hudHidden && (
-          <div className="flex flex-wrap items-center justify-center gap-1.5 rounded-xl bg-white/95 border border-slate-200 px-3 py-2 shadow-md">
-            <span className="text-xs font-medium text-slate-500 px-1.5 hidden sm:inline whitespace-nowrap">
-              Fast Travel:
-            </span>
-            {DISTRICTS.map((d) => (
               <button
-                key={d.id}
                 type="button"
-                onClick={() => handleDistrictJump(d.id)}
-                className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-700 hover:bg-sky-50 hover:text-sky-700 transition-colors whitespace-nowrap shrink-0"
+                onClick={resetCamera}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-700 hover:bg-slate-100 transition-colors whitespace-nowrap shrink-0"
+                title="Reset camera angle"
               >
-                {d.name}
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Reset Cam</span>
               </button>
-            ))}
-            <button
-              type="button"
-              onClick={() => setOuterMenuOpen((v) => !v)}
-              className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
-                outerMenuOpen ? 'bg-sky-100 text-sky-800' : 'text-sky-700 hover:bg-sky-50'
-              }`}
-            >
-              <span>Outer Districts</span>
-              {outerMenuOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
-            </button>
-            <span className="h-4 w-px bg-slate-200 mx-0.5" aria-hidden="true" />
-            <button
-              type="button"
-              onClick={() => {
-                setMapSnapshot({
-                  x: playerPosRef.current.x,
-                  z: playerPosRef.current.z,
-                  yaw: playerYawRef.current,
-                });
-                setMapOpen(true);
-              }}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-slate-800 bg-slate-100 hover:bg-sky-50 hover:text-sky-700 transition-colors whitespace-nowrap shrink-0"
-              title="Open Interactive World Map (M)"
-            >
-              <MapIcon className="w-3.5 h-3.5" />
-              <span>World Map (M)</span>
-            </button>
-            <button
-              type="button"
-              onClick={resetCamera}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-700 hover:bg-slate-100 transition-colors whitespace-nowrap shrink-0"
-              title="Reset camera angle"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              <span>Reset Cam</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                const outerMatch = OPEN_WORLD_DISTRICTS.find((d) => d.name === currentDistrictName);
-                if (outerMatch && worldRef.current) {
-                  const guideAgent = worldRef.current.livingNpcs.interactiveMap.get(outerMatch.guideNpc.id);
-                  if (guideAgent) {
-                    openNpc(guideAgent.spec.npcInfo);
-                    return;
+              <button
+                type="button"
+                onClick={() => {
+                  const outerMatch = OPEN_WORLD_DISTRICTS.find((d) => d.name === currentDistrictName);
+                  if (outerMatch && worldRef.current) {
+                    const guideAgent = worldRef.current.livingNpcs.interactiveMap.get(outerMatch.guideNpc.id);
+                    if (guideAgent) {
+                      openNpc(guideAgent.spec.npcInfo);
+                      return;
+                    }
                   }
-                }
-                const nearestDist = DISTRICTS.find((d) => d.name === currentDistrictName) ?? DISTRICTS[0];
-                openNpc(nearestDist.npc);
-              }}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-sky-600 text-white hover:bg-sky-700 transition-colors whitespace-nowrap shrink-0"
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>District Mentor</span>
-            </button>
-          </div>
-        )}
-      </div>
+                  const nearestDist = DISTRICTS.find((d) => d.name === currentDistrictName) ?? DISTRICTS[0];
+                  openNpc(nearestDist.npc);
+                }}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-sky-600 text-white hover:bg-sky-700 transition-colors whitespace-nowrap shrink-0"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>District Mentor</span>
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Creative Sandbox Build Mode Toolbar */}
+      {buildMode && (
+        <SandboxToolbar
+          activeTool={sandboxTool}
+          setActiveTool={(t) => {
+            setSandboxTool(t);
+            setMovingObjectId(null);
+          }}
+          selectedItemId={selectedItemId}
+          setSelectedItemId={setSelectedItemId}
+          selectedVariant={selectedVariant}
+          setSelectedVariant={setSelectedVariant}
+          gridSnap={gridSnap}
+          setGridSnap={setGridSnap}
+          rotY={buildRotY}
+          onRotate={() => {
+            const step = gridSnap ? Math.PI / 2 : Math.PI / 12;
+            setBuildRotY((r) => (r + step) % (Math.PI * 2));
+          }}
+          canUndo={undoCount > 0}
+          canRedo={redoCount > 0}
+          onUndo={handleSandboxUndo}
+          onRedo={handleSandboxRedo}
+          itemCount={activeSandboxItems.length}
+          currentZone={currentBuildZone}
+          previewStatus={previewStatus}
+          movingObjectId={movingObjectId}
+          unlockedItems={miniGameProgress.unlockedSandboxItems}
+          savedBuilds={sandboxBuilds}
+          activeBuildId={activeSandboxBuildId}
+          onSaveBuild={(name, zoneId) => saveSandboxBuild(name, zoneId, activeSandboxItems, activeSandboxBuildId)}
+          onLoadBuild={(buildId) => {
+            selectSandboxBuild(buildId);
+          }}
+          onNewBuild={() => createNewSandboxDraft()}
+          onRenameBuild={(buildId, newName) => renameSandboxBuild(buildId, newName)}
+          onDeleteBuild={(buildId) => deleteSandboxBuild(buildId)}
+          onJumpToZone={(zone) => {
+            handleFastTravelCoords(zone.centerX, zone.centerZ, zone.name);
+            setCurrentBuildZone(zone);
+          }}
+          onMobileAction={(action) => executeSandboxAction(action)}
+          onExitBuildMode={() => setBuildMode(false)}
+        />
+      )}
 
       <WorldMapModal
         isOpen={mapOpen}

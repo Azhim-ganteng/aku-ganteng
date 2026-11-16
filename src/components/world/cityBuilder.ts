@@ -87,13 +87,16 @@ export interface CityWorldHandle {
   waterNormal: THREE.CanvasTexture;
   openWorld: OpenWorldHandle;
   spatialGrid: SpatialWorldIndex;
+  triggerMotionPuff: (x: number, y: number, z: number, intensity?: number) => void;
+  updateMotionPuffs: (delta: number) => void;
   updateAvatarAppearance: (config: AvatarConfig) => void;
   dispose: () => void;
 }
 
 function attachUv2(geo: THREE.BufferGeometry): THREE.BufferGeometry {
-  if (geo.attributes.uv && !geo.attributes.uv2) {
-    geo.setAttribute('uv2', geo.attributes.uv);
+  if (geo.attributes.uv) {
+    if (!geo.attributes.uv1) geo.setAttribute('uv1', geo.attributes.uv);
+    if (!geo.attributes.uv2) geo.setAttribute('uv2', geo.attributes.uv);
   }
   return geo;
 }
@@ -1862,10 +1865,66 @@ export function buildSolarpunkCity(
     buildLivingNpcSystem(scene, texSet.contactShadowMap, lowCostMode, qualityTier, OPEN_WORLD_NPCS),
   );
 
-  // 10. Player Avatar
+  // 10. Player Avatar + Pooled Zero-GC Jump/Landing Motion Puff FX
   const avatar = buildAvatarRig(avatarConfig, texSet.contactShadowMap);
   avatar.root.position.set(0, 0, 14);
   scene.add(avatar.root);
+
+  const puffGeo = track(new THREE.RingGeometry(0.18, 0.36, 16));
+  puffGeo.rotateX(-Math.PI / 2);
+  const puffMat = track(
+    new THREE.MeshBasicMaterial({
+      color: 0xe2e8f0,
+      transparent: true,
+      opacity: 0.55,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  const PUFF_POOL_SIZE = 10;
+  const puffPool: {
+    mesh: THREE.Mesh;
+    mat: THREE.MeshBasicMaterial;
+    life: number;
+    maxLife: number;
+    baseScale: number;
+  }[] = [];
+  for (let i = 0; i < PUFF_POOL_SIZE; i++) {
+    const mat = track(puffMat.clone());
+    const mesh = new THREE.Mesh(puffGeo, mat);
+    mesh.visible = false;
+    scene.add(mesh);
+    puffPool.push({ mesh, mat, life: 0, maxLife: 0.35, baseScale: 1 });
+  }
+  let puffCursor = 0;
+
+  const triggerMotionPuff = (x: number, y: number, z: number, intensity = 1) => {
+    const slot = puffPool[puffCursor];
+    puffCursor = (puffCursor + 1) % PUFF_POOL_SIZE;
+    slot.mesh.position.set(x, y + 0.04, z);
+    slot.mesh.scale.setScalar(0.55);
+    slot.life = 0.001;
+    slot.maxLife = 0.28 + intensity * 0.14;
+    slot.baseScale = 0.8 + intensity * 0.9;
+    slot.mat.opacity = Math.min(0.65, 0.32 + intensity * 0.24);
+    slot.mesh.visible = true;
+  };
+
+  const updateMotionPuffs = (delta: number) => {
+    for (let i = 0; i < puffPool.length; i++) {
+      const p = puffPool[i];
+      if (!p.mesh.visible) continue;
+      p.life += delta;
+      const t = p.life / p.maxLife;
+      if (t >= 1) {
+        p.mesh.visible = false;
+        continue;
+      }
+      const easeOut = 1 - (1 - t) * (1 - t);
+      p.mesh.scale.setScalar(0.55 + easeOut * p.baseScale * 1.45);
+      p.mat.opacity = (1 - t) * 0.45;
+    }
+  };
 
   const updateAvatarAppearance = (cfg: AvatarConfig) => {
     avatar.suitMaterial.color.set(cfg.suitColor);
@@ -1895,6 +1954,8 @@ export function buildSolarpunkCity(
     waterNormal: texSet.waterNormal,
     openWorld,
     spatialGrid,
+    triggerMotionPuff,
+    updateMotionPuffs,
     updateAvatarAppearance,
     dispose,
   };

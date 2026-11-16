@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { CheckCircle2, MapPin, Play, Search } from 'lucide-react';
+import { CheckCircle2, MapPin, Play, Search, Trophy } from 'lucide-react';
 import { DISTRICTS } from '../../data/districts';
 import { GAMES_CATALOG } from '../../data/gamesCatalog';
 import { useEduWorld } from '../../context/EduWorldContext';
@@ -14,7 +14,7 @@ const CATEGORIES: ('All' | GameCategory)[] = [
 ];
 
 export const GamesCatalogView: React.FC = () => {
-  const { player, openGame, teleportToBuilding } = useEduWorld();
+  const { player, openGame, openMiniGameHub, teleportToBuilding, miniGameProgress } = useEduWorld();
   const [selectedCategory, setSelectedCategory] = useState<'All' | GameCategory>('All');
   const [search, setSearch] = useState('');
 
@@ -41,15 +41,25 @@ export const GamesCatalogView: React.FC = () => {
           </p>
         </div>
 
-        <div className="relative w-full md:w-72">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search games or buildings..."
-            className="w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-sky-500"
-          />
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 w-full md:w-auto">
+          <button
+            type="button"
+            onClick={() => openMiniGameHub()}
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-amber-500 text-white px-4 py-2.5 text-xs font-bold hover:bg-amber-600 transition-colors whitespace-nowrap"
+          >
+            <Trophy className="w-4 h-4" />
+            <span>Mini Game Hub ({miniGameProgress.completedIds.length}/7)</span>
+          </button>
+          <div className="relative w-full md:w-64">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search games or buildings..."
+              className="w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-sky-500"
+            />
+          </div>
         </div>
       </div>
 

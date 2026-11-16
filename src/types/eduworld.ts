@@ -258,3 +258,92 @@ export interface ExplorationProgressState {
   claimedObjectives: string[];
 }
 
+// --- Creative Sandbox Building System ---
+export type SandboxItemCategory = 'blocks' | 'objects' | 'unlockable';
+
+export type SandboxTool = 'place' | 'remove' | 'move' | 'duplicate';
+
+export interface SandboxCatalogItem {
+  id: string;
+  name: string;
+  category: SandboxItemCategory;
+  kind: 'block' | 'object';
+  size: { w: number; h: number; d: number };
+  colorHex: string;
+  accentHex?: string;
+  walkableTop: boolean;
+  transparent?: boolean;
+  unlockRequirementLabel?: string;
+}
+
+export interface PlacedSandboxObject {
+  id: string;
+  itemId: string;
+  x: number;
+  y: number;
+  z: number;
+  rotY: number; // radians
+  materialVariant?: string;
+}
+
+export interface BuildZoneDefinition {
+  id: string;
+  name: string;
+  theme: string;
+  centerX: number;
+  centerZ: number;
+  halfW: number;
+  halfD: number;
+  accentHex: string;
+}
+
+export interface SandboxBuildProject {
+  buildId: string;
+  name: string;
+  zoneId: string;
+  items: PlacedSandboxObject[];
+  updatedAt: string;
+}
+
+// --- Mini Game Hub System ---
+export type MiniGameId =
+  | 'parkour'
+  | 'treasure-hunt'
+  | 'quiz-battle'
+  | 'science-challenge'
+  | 'network-puzzle'
+  | 'racing'
+  | 'farming';
+
+export interface MiniGameDefinition {
+  id: MiniGameId;
+  title: string;
+  tagline: string;
+  instructions: string;
+  accentHex: string;
+  badgeId: string;
+  badgeTitle: string;
+  unlockItemId: string;
+  unlockItemName: string;
+  baseXp: number;
+  baseCoins: number;
+}
+
+export interface MiniGameCompletionPayload {
+  miniGameId: MiniGameId;
+  score: number;
+  timeSeconds?: number;
+  accuracy?: number;
+  won: boolean;
+}
+
+export interface MiniGameProgressState {
+  completedIds: MiniGameId[];
+  bestScores: Partial<Record<MiniGameId, number>>;
+  bestTimes: Partial<Record<MiniGameId, number>>;
+  unlockedBadges: string[];
+  unlockedSandboxItems: string[];
+  playCounts: Partial<Record<MiniGameId, number>>;
+}
+
+

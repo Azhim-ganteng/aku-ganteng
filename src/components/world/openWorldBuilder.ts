@@ -12,6 +12,7 @@ import {
   WORLD_LANDMARKS,
   WORLD_WATER_BODIES,
 } from '../../data/openWorldData';
+import { MINI_GAME_HUB_COORDS } from '../../data/miniGamesData';
 import { ProceduralTextureSet } from './proceduralMaterials';
 import { SpatialWorldIndex } from './spatialGrid';
 
@@ -30,6 +31,7 @@ export interface OpenWorldAnimatedItems {
   dishes: THREE.Group[];
   roverGroup: THREE.Group | null;
   aiPrism: THREE.Mesh | null;
+  hubCrown: THREE.Mesh | null;
 }
 
 export interface OpenWorldHandle {
@@ -176,7 +178,48 @@ export function buildOpenWorldSystem(
     dishes: [],
     roverGroup: null,
     aiPrism: null,
+    hubCrown: null,
   };
+
+  const attachUv2 = (geo: THREE.BufferGeometry): THREE.BufferGeometry => {
+    if (geo.attributes.uv) {
+      if (!geo.attributes.uv1) geo.setAttribute('uv1', geo.attributes.uv);
+      if (!geo.attributes.uv2) geo.setAttribute('uv2', geo.attributes.uv);
+    }
+    return geo;
+  };
+
+  // Shared architectural accent geometries & materials across outer facilities & Mini Game Hub
+  const aoSkirtMat = track(
+    new THREE.MeshBasicMaterial({
+      map: texSet.buildingAoSkirtMap,
+      transparent: true,
+      opacity: 0.84,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    }),
+  );
+  const lobbyLightMat = track(
+    new THREE.MeshStandardMaterial({
+      color: 0xfef3c7,
+      emissive: 0xfcd34d,
+      emissiveIntensity: 0.92,
+      roughness: 0.2,
+    }),
+  );
+  const sconceLensMat = track(
+    new THREE.MeshStandardMaterial({
+      color: 0xfffbeb,
+      emissive: 0xfde68a,
+      emissiveIntensity: 1.05,
+      roughness: 0.18,
+    }),
+  );
+  const sconceBodyGeo = track(new THREE.BoxGeometry(0.24, 0.48, 0.24));
+  const sconceLensGeo = track(new THREE.BoxGeometry(0.18, 0.36, 0.18));
+  const bollardGeo = track(new THREE.CylinderGeometry(0.14, 0.16, 0.72, 8));
 
   // Shared materials & reusable geometries across all 6 outer districts
   const benchWoodMat = track(new THREE.MeshStandardMaterial({ color: 0x92400e, roughness: 0.78, metalness: 0.06 }));
@@ -679,6 +722,230 @@ export function buildOpenWorldSystem(
   };
   WORLD_BRIDGES.forEach(buildBridgeMesh);
 
+  // 7. Interactive Mini Game Hub Pavilion at (46, -112) connected to Grand Academy Ringway
+  {
+    const hx = MINI_GAME_HUB_COORDS.x;
+    const hz = MINI_GAME_HUB_COORDS.z;
+    const hubYaw = Math.atan2(-hx, -hz);
+    const hubGroup = new THREE.Group();
+    hubGroup.position.set(hx, 0, hz);
+    hubGroup.rotation.y = hubYaw;
+
+    // Short connecting stone walkway from Ringway (r=109.5) to Pavilion front steps
+    const pathLen = 14;
+    const walkway = new THREE.Mesh(
+      track(new THREE.BoxGeometry(4.4, 0.05, pathLen)),
+      sharedMaterials.curbMat,
+    );
+    walkway.position.set(0, 0.025, 10);
+    walkway.receiveShadow = true;
+    hubGroup.add(walkway);
+
+    const hubAoSkirt = new THREE.Mesh(track(new THREE.PlaneGeometry(18.5, 16.5)), aoSkirtMat);
+    hubAoSkirt.rotation.x = -Math.PI / 2;
+    hubAoSkirt.position.y = 0.025;
+
+    const hubPlinth = new THREE.Mesh(
+      attachUv2(track(new THREE.BoxGeometry(16.2, 0.24, 14.2))),
+      sharedMaterials.titaniumMat,
+    );
+    hubPlinth.position.y = 0.12;
+    hubPlinth.receiveShadow = true;
+
+    const podium = new THREE.Mesh(
+      attachUv2(track(new THREE.BoxGeometry(15.5, 0.8, 13.5))),
+      sharedMaterials.limestoneMat,
+    );
+    podium.position.y = 0.4;
+    podium.receiveShadow = true;
+    podium.castShadow = !lowCostMode;
+
+    const podiumCornice = new THREE.Mesh(
+      track(new THREE.BoxGeometry(15.72, 0.16, 13.72)),
+      sharedMaterials.titaniumMat,
+    );
+    podiumCornice.position.y = 0.84;
+
+    const hubAccentMat = track(
+      new THREE.MeshPhysicalMaterial({
+        color: 0xf59e0b,
+        normalMap: lowCostMode ? null : texSet.titaniumNormal,
+        normalScale: new THREE.Vector2(0.25, 0.25),
+        roughness: 0.24,
+        metalness: 0.56,
+        clearcoat: 0.55,
+        clearcoatRoughness: 0.15,
+        envMapIntensity: 1.4,
+      }),
+    );
+
+    const body = new THREE.Mesh(
+      attachUv2(track(new THREE.BoxGeometry(12.2, 6.2, 10.2))),
+      sharedMaterials.limestoneMat,
+    );
+    body.position.y = 0.8 + 3.1;
+    body.castShadow = !lowCostMode;
+    body.receiveShadow = true;
+
+    const glassBand = new THREE.Mesh(
+      attachUv2(track(new THREE.BoxGeometry(12.5, 3.8, 8.2))),
+      sharedMaterials.glassMat,
+    );
+    glassBand.position.y = 4.0;
+
+    const glassBandZ = new THREE.Mesh(
+      attachUv2(track(new THREE.BoxGeometry(9.6, 3.8, 10.5))),
+      sharedMaterials.glassMat,
+    );
+    glassBandZ.position.y = 4.0;
+
+    // Corner architectural pilasters & horizontal spandrel sunshade band
+    const hubPilasterGeo = track(new THREE.BoxGeometry(0.62, 6.3, 0.62));
+    [
+      [-5.95, -4.95],
+      [5.95, -4.95],
+      [-5.95, 4.95],
+      [5.95, 4.95],
+    ].forEach(([px, pz]) => {
+      const pil = new THREE.Mesh(hubPilasterGeo, sharedMaterials.limestoneMat);
+      pil.position.set(px, 0.8 + 3.1, pz);
+      pil.castShadow = !lowCostMode;
+      hubGroup.add(pil);
+    });
+
+    const hubSpandrel = new THREE.Mesh(track(new THREE.BoxGeometry(12.75, 0.26, 10.75)), sharedMaterials.titaniumMat);
+    hubSpandrel.position.y = 4.05;
+    const hubParapet = new THREE.Mesh(track(new THREE.BoxGeometry(12.6, 0.34, 10.6)), sharedMaterials.titaniumMat);
+    hubParapet.position.y = 7.0;
+
+    const portal = new THREE.Mesh(track(new THREE.BoxGeometry(4.8, 3.3, 0.9)), hubAccentMat);
+    portal.position.set(0, 2.45, 5.2);
+    const door = new THREE.Mesh(track(new THREE.BoxGeometry(3.2, 2.5, 0.96)), sharedMaterials.doorGlassMat);
+    door.position.set(0, 2.05, 5.25);
+    const hubLobbyGlow = new THREE.Mesh(track(new THREE.PlaneGeometry(2.75, 2.1)), lobbyLightMat);
+    hubLobbyGlow.position.set(0, 2.02, 5.74);
+    const hubDoorDiv = new THREE.Mesh(track(new THREE.BoxGeometry(0.14, 2.5, 1.0)), sharedMaterials.titaniumMat);
+    hubDoorDiv.position.set(0, 2.05, 5.25);
+
+    const hubCanopy = new THREE.Mesh(track(new THREE.BoxGeometry(5.6, 0.18, 1.6)), sharedMaterials.titaniumMat);
+    hubCanopy.position.set(0, 3.95, 5.65);
+    const hubCanopyLight = new THREE.Mesh(track(new THREE.BoxGeometry(3.8, 0.04, 0.25)), sconceLensMat);
+    hubCanopyLight.position.set(0, 3.85, 5.85);
+
+    [-2.55, 2.55].forEach((sx) => {
+      const sb = new THREE.Mesh(sconceBodyGeo, sharedMaterials.titaniumMat);
+      sb.position.set(sx, 2.8, 5.2);
+      const sl = new THREE.Mesh(sconceLensGeo, sconceLensMat);
+      sl.position.set(sx, 2.8, 5.28);
+      const bol = new THREE.Mesh(bollardGeo, hubAccentMat);
+      bol.position.set(sx * 0.9, 1.16, 5.75);
+      hubGroup.add(sb, sl, bol);
+    });
+
+    const roof = new THREE.Mesh(
+      track(new THREE.CylinderGeometry(5.6, 6.8, 1.2, 8)),
+      sharedMaterials.titaniumMat,
+    );
+    roof.position.y = 7.6;
+
+    const halo = new THREE.Mesh(
+      track(new THREE.TorusGeometry(4.6, 0.2, 10, 32)),
+      hubAccentMat,
+    );
+    halo.rotation.x = Math.PI / 2;
+    halo.position.y = 8.7;
+
+    hubGroup.add(
+      hubAoSkirt,
+      hubPlinth,
+      podiumCornice,
+      glassBandZ,
+      hubSpandrel,
+      hubParapet,
+      hubLobbyGlow,
+      hubDoorDiv,
+      hubCanopy,
+      hubCanopyLight,
+    );
+
+    const crown = new THREE.Mesh(
+      track(new THREE.OctahedronGeometry(1.45, 0)),
+      track(
+        new THREE.MeshStandardMaterial({
+          color: 0x38bdf8,
+          emissive: 0x0284c7,
+          emissiveIntensity: 0.72,
+          roughness: 0.15,
+          metalness: 0.3,
+        }),
+      ),
+    );
+    crown.position.y = 10.2;
+    animated.hubCrown = crown;
+
+    const signTex = track(
+      createSignpostTexture('Mini Game Hub', '7 Playable Challenges', '#F59E0B', renderer, lowCostMode),
+    );
+    const signBoard = new THREE.Mesh(
+      track(new THREE.PlaneGeometry(5.2, 1.5)),
+      track(
+        new THREE.MeshStandardMaterial({
+          map: signTex,
+          emissive: 0xffffff,
+          emissiveMap: signTex,
+          emissiveIntensity: 0.32,
+          roughness: 0.3,
+        }),
+      ),
+    );
+    signBoard.position.set(0, 5.1, 5.25);
+
+    const hit = new THREE.Mesh(
+      track(new THREE.BoxGeometry(14, 7.5, 12)),
+      hitProxyMat,
+    );
+    hit.position.y = 3.8;
+    hit.layers.set(1);
+    hit.userData = { kind: 'minigame-hub' };
+    hitProxies.push(hit);
+
+    const camCol = new THREE.Mesh(
+      track(new THREE.BoxGeometry(12.6, 7.6, 10.6)),
+      camColliderMat,
+    );
+    camCol.position.y = 3.9;
+    camCol.layers.set(2);
+    cameraOccluders.push(camCol);
+
+    hubGroup.add(podium, body, glassBand, portal, door, roof, halo, crown, signBoard, hit, camCol);
+    networkGroup.add(hubGroup);
+
+    const cosYaw = Math.cos(hubYaw);
+    const sinYaw = Math.sin(hubYaw);
+    spatialGrid.addBox({
+      x: hx,
+      z: hz,
+      halfW: 7.9,
+      halfD: 6.9,
+      topY: 0.8,
+      baseY: 0,
+      cosYaw,
+      sinYaw,
+      walkableTop: true,
+    });
+    spatialGrid.addBox({
+      x: hx,
+      z: hz,
+      halfW: 6.2,
+      halfD: 5.2,
+      topY: 7.2,
+      baseY: 0.75,
+      cosYaw,
+      sinYaw,
+      walkableTop: false,
+    });
+  }
+
   // ============================================================================
   // PART B: CHUNK-BASED PROGRESSIVE BUILDERS FOR ALL 6 OUTER WORLD DISTRICTS
   // ============================================================================
@@ -690,16 +957,19 @@ export function buildOpenWorldSystem(
     const accentMat = track(
       new THREE.MeshPhysicalMaterial({
         color: new THREE.Color(d.accentHex),
+        normalMap: lowCostMode ? null : texSet.titaniumNormal,
+        normalScale: new THREE.Vector2(0.25, 0.25),
         roughness: 0.28,
         metalness: 0.54,
-        clearcoat: 0.4,
-        envMapIntensity: 1.3,
+        clearcoat: 0.44,
+        clearcoatRoughness: 0.16,
+        envMapIntensity: 1.35,
       }),
     );
 
     // District Central Travertine Plaza Pad
     const pad = new THREE.Mesh(
-      track(new THREE.CylinderGeometry(18.5, 19.2, 0.16, 36)),
+      attachUv2(track(new THREE.CylinderGeometry(18.5, 19.2, 0.16, 36))),
       sharedMaterials.limestoneMat,
     );
     pad.position.set(d.plazaCoords.x, 0.08, d.plazaCoords.z);
@@ -716,7 +986,7 @@ export function buildOpenWorldSystem(
 
     spatialGrid.addCircle({ x: d.plazaCoords.x, z: d.plazaCoords.z, radius: 18.8, topY: 0.16, walkableTop: true });
 
-    // Build all District Facilities with THREE.LOD + Spatial OBB Colliders + Camera Anti-Clip
+    // Build all District Facilities with High-Definition Facades + THREE.LOD + Spatial OBB Colliders + Camera Anti-Clip
     d.facilities.forEach((fac) => {
       const fx = d.plazaCoords.x + fac.offsetX;
       const fz = d.plazaCoords.z + fac.offsetZ;
@@ -732,15 +1002,31 @@ export function buildOpenWorldSystem(
       const hi = new THREE.Group();
       const lo = new THREE.Group();
 
-      const podiumGeo = track(new THREE.BoxGeometry(podiumW, 0.9, podiumD));
-      const bodyGeo = track(new THREE.BoxGeometry(fac.width, fac.height, fac.depth));
-      const glassGeo = track(new THREE.BoxGeometry(fac.width + 0.28, fac.height * 0.72, fac.depth * 0.72));
-      const glassCrossGeo = track(new THREE.BoxGeometry(fac.width * 0.72, fac.height * 0.72, fac.depth + 0.28));
+      const podiumGeo = attachUv2(track(new THREE.BoxGeometry(podiumW, 0.9, podiumD)));
+      const plinthGeo = attachUv2(track(new THREE.BoxGeometry(podiumW + 0.55, 0.24, podiumD + 0.55)));
+      const podiumTrimGeo = track(new THREE.BoxGeometry(podiumW + 0.18, 0.16, podiumD + 0.18));
+      const bodyGeo = attachUv2(track(new THREE.BoxGeometry(fac.width, fac.height, fac.depth)));
+      const glassGeo = attachUv2(track(new THREE.BoxGeometry(fac.width + 0.28, fac.height * 0.72, fac.depth * 0.72)));
+      const glassCrossGeo = attachUv2(track(new THREE.BoxGeometry(fac.width * 0.72, fac.height * 0.72, fac.depth + 0.28)));
+
+      const aoSkirt = new THREE.Mesh(
+        track(new THREE.PlaneGeometry(podiumW + 2.4, podiumD + 2.4)),
+        aoSkirtMat,
+      );
+      aoSkirt.rotation.x = -Math.PI / 2;
+      aoSkirt.position.y = 0.024;
+
+      const plinthHi = new THREE.Mesh(plinthGeo, sharedMaterials.titaniumMat);
+      plinthHi.position.y = 0.12;
+      plinthHi.receiveShadow = true;
 
       const podiumHi = new THREE.Mesh(podiumGeo, sharedMaterials.limestoneMat);
       podiumHi.position.y = 0.45;
       podiumHi.receiveShadow = true;
       podiumHi.castShadow = !lowCostMode;
+
+      const podiumTrim = new THREE.Mesh(podiumTrimGeo, sharedMaterials.titaniumMat);
+      podiumTrim.position.y = 0.88;
 
       const bodyHi = new THREE.Mesh(bodyGeo, sharedMaterials.limestoneMat);
       bodyHi.position.y = 0.9 + fac.height * 0.5;
@@ -749,23 +1035,95 @@ export function buildOpenWorldSystem(
 
       const glassA = new THREE.Mesh(glassGeo, sharedMaterials.glassMat);
       glassA.position.y = 1.1 + fac.height * 0.48;
+      glassA.receiveShadow = true;
       const glassB = new THREE.Mesh(glassCrossGeo, sharedMaterials.glassMat);
       glassB.position.y = 1.1 + fac.height * 0.48;
+      glassB.receiveShadow = true;
 
+      // 4 Architectural Corner Pilasters with Titanium Capitals
+      const pilGeo = attachUv2(track(new THREE.BoxGeometry(0.58, fac.height + 0.16, 0.58)));
+      const pilCapGeo = track(new THREE.BoxGeometry(0.7, 0.3, 0.7));
+      const pxOff = fac.width * 0.5 - 0.18;
+      const pzOff = fac.depth * 0.5 - 0.18;
+      [
+        [-pxOff, -pzOff],
+        [pxOff, -pzOff],
+        [-pxOff, pzOff],
+        [pxOff, pzOff],
+      ].forEach(([cx, cz]) => {
+        const pil = new THREE.Mesh(pilGeo, sharedMaterials.limestoneMat);
+        pil.position.set(cx, 0.9 + fac.height * 0.5, cz);
+        pil.castShadow = !lowCostMode;
+        const capTop = new THREE.Mesh(pilCapGeo, sharedMaterials.titaniumMat);
+        capTop.position.set(cx, 0.9 + fac.height - 0.18, cz);
+        hi.add(pil, capTop);
+      });
+
+      // Horizontal Floor Spandrel Bands & Protruding Brise-Soleil Sunshades
+      const bandCount = Math.max(1, Math.floor(fac.height / 4.2));
+      const spandrelGeo = track(new THREE.BoxGeometry(fac.width + 0.32, 0.22, fac.depth + 0.32));
+      const sunshadeZGeo = track(new THREE.BoxGeometry(fac.width * 0.74, 0.08, fac.depth + 0.58));
+      const sunshadeXGeo = track(new THREE.BoxGeometry(fac.width + 0.58, 0.08, fac.depth * 0.74));
+      for (let b = 1; b <= bandCount; b++) {
+        const bandY = 0.9 + (b * fac.height) / (bandCount + 1);
+        const sp = new THREE.Mesh(spandrelGeo, sharedMaterials.titaniumMat);
+        sp.position.y = bandY;
+        hi.add(sp);
+        if (bandY > 4.0) {
+          const sz = new THREE.Mesh(sunshadeZGeo, sharedMaterials.titaniumMat);
+          sz.position.y = bandY + 0.12;
+          const sx = new THREE.Mesh(sunshadeXGeo, sharedMaterials.titaniumMat);
+          sx.position.y = bandY + 0.12;
+          hi.add(sz, sx);
+        }
+      }
+
+      // Vertical Brushed-Titanium Facade Fins
+      const finGeo = track(new THREE.BoxGeometry(0.36, fac.height * 0.8, fac.depth + 0.44));
+      const finL = new THREE.Mesh(finGeo, sharedMaterials.titaniumMat);
+      finL.position.set(-fac.width * 0.24, 0.9 + fac.height * 0.48, 0);
+      const finR = new THREE.Mesh(finGeo, sharedMaterials.titaniumMat);
+      finR.position.set(fac.width * 0.24, 0.9 + fac.height * 0.48, 0);
+
+      // Entrance Portal, Illuminated Lobby Doors, Canopy Downlight & Exterior Sconces
       const portal = new THREE.Mesh(track(new THREE.BoxGeometry(4.2, 3.0, 0.9)), accentMat);
       portal.position.set(0, 2.2, fac.depth * 0.5 + 0.25);
 
       const door = new THREE.Mesh(track(new THREE.BoxGeometry(2.8, 2.3, 0.96)), sharedMaterials.doorGlassMat);
       door.position.set(0, 1.95, fac.depth * 0.5 + 0.28);
 
+      const lobbyGlow = new THREE.Mesh(track(new THREE.PlaneGeometry(2.4, 1.98)), lobbyLightMat);
+      lobbyGlow.position.set(0, 1.95, fac.depth * 0.5 + 0.77);
+
+      const doorDiv = new THREE.Mesh(track(new THREE.BoxGeometry(0.12, 2.3, 1.0)), sharedMaterials.titaniumMat);
+      doorDiv.position.set(0, 1.95, fac.depth * 0.5 + 0.28);
+
       const canopy = new THREE.Mesh(track(new THREE.BoxGeometry(5.2, 0.2, 1.8)), sharedMaterials.titaniumMat);
       canopy.position.set(0, 3.8, fac.depth * 0.5 + 0.75);
+
+      const canopyLight = new THREE.Mesh(track(new THREE.BoxGeometry(3.6, 0.04, 0.25)), sconceLensMat);
+      canopyLight.position.set(0, 3.69, fac.depth * 0.5 + 1.0);
+
+      [-2.3, 2.3].forEach((sx) => {
+        const sb = new THREE.Mesh(sconceBodyGeo, sharedMaterials.titaniumMat);
+        sb.position.set(sx, 2.55, fac.depth * 0.5 + 0.22);
+        const sl = new THREE.Mesh(sconceLensGeo, sconceLensMat);
+        sl.position.set(sx, 2.55, fac.depth * 0.5 + 0.3);
+        const bol = new THREE.Mesh(bollardGeo, accentMat);
+        bol.position.set(sx * 0.92, 1.24, fac.depth * 0.5 + 0.85);
+        hi.add(sb, sl, bol);
+      });
 
       const roofParapet = new THREE.Mesh(
         track(new THREE.BoxGeometry(fac.width + 0.6, 0.45, fac.depth + 0.6)),
         sharedMaterials.titaniumMat,
       );
       roofParapet.position.y = 0.9 + fac.height;
+      const atticTrim = new THREE.Mesh(
+        track(new THREE.BoxGeometry(fac.width + 0.78, 0.16, fac.depth + 0.78)),
+        accentMat,
+      );
+      atticTrim.position.y = 0.9 + fac.height + 0.18;
 
       const signTex = track(createSignpostTexture(fac.name, d.name, d.accentHex, renderer, lowCostMode));
       const signMat = track(
@@ -780,7 +1138,26 @@ export function buildOpenWorldSystem(
       const signBoard = new THREE.Mesh(track(new THREE.PlaneGeometry(4.6, 1.35)), signMat);
       signBoard.position.set(0, 4.75, fac.depth * 0.5 + 0.28);
 
-      hi.add(podiumHi, bodyHi, glassA, glassB, portal, door, canopy, roofParapet, signBoard);
+      hi.add(
+        aoSkirt,
+        plinthHi,
+        podiumHi,
+        podiumTrim,
+        bodyHi,
+        glassA,
+        glassB,
+        finL,
+        finR,
+        portal,
+        door,
+        lobbyGlow,
+        doorDiv,
+        canopy,
+        canopyLight,
+        roofParapet,
+        atticTrim,
+        signBoard,
+      );
 
       // Architectural Roof Crown
       const crownRadius = Math.min(fac.width, fac.depth) * 0.4;
@@ -1230,6 +1607,11 @@ export function buildOpenWorldSystem(
       const cz = 98 + 24;
       animated.roverGroup.position.set(cx + Math.cos(a) * 9.8, 0.04, cz + Math.sin(a) * 9.8);
       animated.roverGroup.rotation.y = -a;
+    }
+
+    if (animated.hubCrown) {
+      animated.hubCrown.rotation.y = elapsed * 1.1;
+      animated.hubCrown.position.y = 10.2 + Math.sin(elapsed * 2.1) * 0.28;
     }
   };
 

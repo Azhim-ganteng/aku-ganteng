@@ -302,4 +302,59 @@ router.post('/report', async (req: Request, res: Response) => {
   }
 });
 
+router.post('/minigame-hint', async (req: Request, res: Response) => {
+  try {
+    const {
+      gameTitle = 'Mini Game',
+      topic = 'STEM & Logic',
+      questionOrClue = '',
+    } = req.body ?? {};
+
+    const effectivePrompt =
+      typeof questionOrClue === 'string' && questionOrClue.trim()
+        ? questionOrClue.trim()
+        : typeof topic === 'string' && topic.trim()
+        ? topic.trim()
+        : '';
+
+    if (!effectivePrompt) {
+      res.status(400).json({ error: 'questionOrClue or topic is required.' });
+      return;
+    }
+
+    const ai = getAiClient();
+    if (!ai) {
+      res.status(503).json({
+        error: 'Gemini API key is not configured yet. Offline hints remain active.',
+      });
+      return;
+    }
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-4-hydrogen',
+      contents:
+        `Mini-game: ${String(gameTitle)} (Topic: ${String(topic)}).\n` +
+        `Challenge: ${effectivePrompt}\n` +
+        `Provide a concise, encouraging 1-2 sentence educational hint without spoiling the exact final answer, plus a brief 1-sentence concept note.`,
+      config: {
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            hint: { type: Type.STRING },
+            conceptNote: { type: Type.STRING },
+          },
+          required: ['hint', 'conceptNote'],
+        },
+      },
+    });
+
+    const parsed = JSON.parse((response.text ?? '{}').trim());
+    res.json(parsed);
+  } catch (err) {
+    handleAiError(res, err, 'minigame-hint');
+  }
+});
+
 export default router;
